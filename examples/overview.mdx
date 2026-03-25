@@ -1,0 +1,128 @@
+---
+title: "Sample games overview"
+description: "Five complete example games demonstrating Lines, Ways, Cluster, Scatter, and Expanding Wilds mechanics. Use these as starting points or reference implementations for your own game."
+---
+
+The SDK ships with five fully implemented sample games in `games/`. Each game covers a distinct win type and set of mechanics, and all share the same file structure so you can use any of them as a template.
+
+## Included games
+
+| Game ID | Win type | Key mechanics |
+|---|---|---|
+| `0_0_lines` | Lines | 20 paylines, wild multipliers (additive in freegame), separate freegame reelset |
+| `0_0_ways` | Ways | 243 ways, wild multipliers (multiplicative in freegame), wilds excluded from reel 1 |
+| `0_0_cluster` | Cluster | Tumbling, grid position multipliers (up to 512×), global multiplier |
+| `0_0_scatter` | Scatter | Pay-anywhere tumbling, persistent global multiplier, board multiplier symbols |
+| `0_0_expwilds` | Lines | Expanding sticky wilds with random per-spin multipliers, superspin purchase mode |
+
+<CardGroup cols={2}>
+  <Card title="Lines game" icon="align-left" href="/examples/lines-game">
+    3-row, 5-reel, 20 paylines. Wild multipliers add together in freegame. Separate freegame reelset.
+  </Card>
+  <Card title="Ways game" icon="grid-2x2" href="/examples/ways-game">
+    5-reel, 3-row, 243 ways. Wild multipliers compound multiplicatively in freegame.
+  </Card>
+  <Card title="Cluster game" icon="circle-nodes" href="/examples/cluster-game">
+    7×7 tumbling board. Grid position multipliers activate and double on each win.
+  </Card>
+  <Card title="Scatter game" icon="scatter-chart" href="/examples/scatter-game">
+    6-reel, 5-row pay-anywhere tumbling. Persistent global multiplier, board multiplier symbols.
+  </Card>
+</CardGroup>
+
+## Running a sample game
+
+From the project root, use the `make` shortcut:
+
+```bash
+make run GAME=0_0_lines
+```
+
+Or invoke the run script directly after activating your virtual environment:
+
+```bash
+python3 games/0_0_lines/run.py
+```
+
+Replace `0_0_lines` with any game ID from the table above.
+
+## Game file structure
+
+Every game directory contains the same set of files:
+
+```
+games/<game_id>/
+├── game_config.py       # GameConfig — dimensions, paytable, reels, BetMode/Distribution setup
+├── gamestate.py         # GameState — run_spin() and run_freespin() logic
+├── game_executables.py  # GameExecutables — grouped helper functions
+├── game_calculations.py # GameCalculations — win evaluation overrides
+├── game_events.py       # Game-specific event emission functions
+├── game_optimization.py # OptimizationSetup — PAR sheet keys and analysis config
+├── game_override.py     # Inheritance chain connecting all layers
+├── run.py               # Entry point: simulations, optimization, analysis
+├── readme.txt           # Brief description of game rules
+└── reels/               # Reelstrip CSV files (BR0.csv, FR0.csv, etc.)
+```
+
+| File | Purpose |
+|---|---|
+| `game_config.py` | Defines all static game parameters: grid size, paytable, special symbols, freespin triggers, reelstrips, and `BetMode`/`Distribution` objects |
+| `gamestate.py` | Implements `run_spin()` for basegame and `run_freespin()` for the feature. This is where game flow is controlled. |
+| `game_executables.py` | Grouped helper methods used in `gamestate.py` (win evaluation, event dispatch, freespin management) |
+| `game_calculations.py` | Optional overrides for win calculation functions from `src/calculations/` |
+| `game_events.py` | Game-specific event builders not covered by the shared event library |
+| `run.py` | Top-level script: sets simulation counts, threading, and which pipeline steps to run |
+
+## Using the template to create a new game
+
+`games/template/` is a minimal skeleton with all required files stubbed out. Copy it to start a new game:
+
+<Steps>
+  <Step title="Copy the template">
+    ```bash
+    cp -r games/template games/my_game
+    ```
+  </Step>
+  <Step title="Set your game ID">
+    Open `games/my_game/game_config.py` and set `self.game_id`, `self.win_type`, `self.num_reels`, `self.num_rows`, and `self.paytable`.
+  </Step>
+  <Step title="Add reelstrips">
+    Create a `reels/` directory inside your game folder and add your reelstrip CSV files.
+  </Step>
+  <Step title="Implement game logic">
+    Fill in `run_spin()` and `run_freespin()` in `gamestate.py`. Use the sample games as reference implementations.
+  </Step>
+  <Step title="Configure bet modes">
+    Set up `BetMode` and `Distribution` objects in `game_config.py` to define simulation criteria.
+  </Step>
+  <Step title="Run your game">
+    ```bash
+    make run GAME=my_game
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Start by running a small number of uncompressed simulations to verify your event output before scaling up. Set `compression = False` and `"base": 100` in `run.py` for quick debugging.
+</Tip>
+
+## Output files
+
+All generated files are written into `games/<game_id>/library/`:
+
+```
+library/
+├── books/
+│   └── books_<mode>.jsonl       # Simulation results (events + payoutMultiplier per round)
+├── lookup_tables/
+│   ├── lookUpTable_<mode>.csv   # id, weight, payoutMultiplier
+│   ├── lookUpTableSegmented_<mode>.csv
+│   └── lookUpTableIdToCriteria_<mode>.csv
+├── forces/
+│   └── force_record_<mode>.json
+└── publish_files/               # Final files required for RGS publication
+```
+
+<Note>
+  The `library/publish_files/` directory contains the books, lookup tables, and index file required for publication to the Stake Engine RGS. These must be present regardless of whether this SDK is used to generate the math results.
+</Note>

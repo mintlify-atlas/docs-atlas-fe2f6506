@@ -1,0 +1,209 @@
+---
+title: "Scatter game (0_0_scatter)"
+description: "A 6-reel, 5-row pay-anywhere tumbling game with a persistent freegame global multiplier and board multiplier symbols. Freespins are 2× the number of Scatters on board with no fixed upper limit."
+---
+
+`0_0_scatter` demonstrates the scatter pay win type on a large tumbling board. The freegame introduces a persistent global multiplier that grows with every tumble, and board-resident multiplier symbols (M) are applied as a final multiplier after tumbling ends.
+
+## Game overview
+
+| Property | Value |
+|---|---|
+| Reels | 6 |
+| Rows | 5 (all reels) |
+| Win type | Scatter (pay-anywhere) |
+| Win cap | 5000× |
+| Target RTP | 97% |
+| Symbols | H1–H4 (high), L1–L4 (low), Wild (W), Scatter (S), Multiplier (M) |
+
+## How to run
+
+```bash
+make run GAME=0_0_scatter
+```
+
+Or directly:
+
+```bash
+python3 games/0_0_scatter/run.py
+```
+
+## Mechanics
+
+### Basegame
+
+- Any group of 8 or more adjacent like symbols on the 6×5 board pays, regardless of reel or row boundaries.
+- Winning symbols are removed; symbols above fall down to fill gaps (tumble). Tumbling continues until no winning groups remain.
+- Minimum 3 Scatters trigger the freegame. Freespins awarded: **2 × (number of Scatters on board)**.
+- Freespin awards by scatter count: 3S → 8 spins, 4S → 12, 5S → 15, 6S → 17, 7S → 19, 8S → 21, 9S → 23, 10S → 24.
+
+<Note>
+  Because new Scatters can tumble onto the board during basegame evaluation, there is no fixed upper limit on how many freespins can be awarded. The total is always `2 × (current Scatters on board)`. This overrides the standard `updateTotalFreeSpinAmount` in `game_executables.py`.
+</Note>
+
+### Freegame
+
+- Global multiplier starts at 1 at the beginning of each freespin (it does not carry over between individual spins).
+- After each tumble: the global multiplier increments by +1 (`update_global_mult()`).
+- The global multiplier is applied to every tumble win as symbols are removed from the board.
+- After all tumbles complete: remaining **Multiplier (M) symbols** on the board are summed and their total is applied as an additional multiplier to the cumulative tumble win.
+- Retrigger: 2+ Scatters during freegame award additional spins (same 2× formula).
+
+<Warning>
+  Multiplier symbols (M) on the board do **not** increment the global multiplier — they are evaluated separately as a final board multiplier after tumbling is complete. Only tumbles (symbol removals) increment the global multiplier.
+</Warning>
+
+## Paytable
+
+Pays are grouped by cluster-size ranges `(8,8)`, `(9,10)`, `(11,13)`, `(14,36)`:
+
+```python
+t1, t2, t3, t4 = (8, 8), (9, 10), (11, 13), (14, 36)
+pay_group = {
+    (t1, "H1"): 3.0,  (t2, "H1"): 7.5,  (t3, "H1"): 15.0, (t4, "H1"): 60.0,
+    (t1, "H2"): 2.0,  (t2, "H2"): 5.0,  (t3, "H2"): 10.0, (t4, "H2"): 40.0,
+    (t1, "H3"): 1.3,  (t2, "H3"): 3.2,  (t3, "H3"): 7.0,  (t4, "H3"): 30.0,
+    (t1, "H4"): 1.0,  (t2, "H4"): 2.5,  (t3, "H4"): 6.0,  (t4, "H4"): 20.0,
+    (t1, "L1"): 0.6,  (t2, "L1"): 1.5,  (t3, "L1"): 4.0,  (t4, "L1"): 10.0,
+    (t1, "L2"): 0.4,  (t2, "L2"): 1.2,  (t3, "L2"): 3.5,  (t4, "L2"): 8.0,
+    (t1, "L3"): 0.2,  (t2, "L3"): 0.8,  (t3, "L3"): 2.5,  (t4, "L3"): 5.0,
+    (t1, "L4"): 0.1,  (t2, "L4"): 0.5,  (t3, "L4"): 1.5,  (t4, "L4"): 4.0,
+}
+self.paytable = self.convert_range_table(pay_group)
+```
+
+## Freespin count override
+
+The standard `updateTotalFreeSpinAmount` is overridden in `game_executables.py` to implement the `2 × scatters` formula:
+
+```python
+def update_freespin_amount(self, scatter_key: str = "scatter"):
+    """Update current and total freespin number and emit event."""
+    self.tot_fs = self.count_special_symbols(scatter_key) * 2
+    if self.gametype == self.config.basegame_type:
+        basegame_trigger, freegame_trigger = True, False
+    else:
+        basegame_trigger, freegame_trigger = False, True
+    fs_trigger_event(self, basegame_trigger=basegame_trigger, freegame_trigger=freegame_trigger)
+```
+
+## Board multiplier evaluation
+
+After all tumbles complete, `set_end_tumble_event()` in `game_executables.py` sums any remaining Multiplier symbols and applies them to the spin win:
+
+```python
+def set_end_tumble_event(self):
+    """After all tumbling events have finished, multiply tumble-win by sum of mult symbols."""
+    if self.gametype == self.config.freegame_type:  # Only multipliers in freegame
+        board_mult, mult_info = self.get_board_multipliers()
+        base_tumble_win = copy(self.win_manager.spin_win)
+        self.win_manager.set_spin_win(base_tumble_win * board_mult)
+        if self.win_manager.spin_win > 0 and len(mult_info) > 0:
+            send_mult_info_event(self, board_mult, mult_info, base_tumble_win,
+                                 self.win_manager.spin_win)
+            update_tumble_win_event(self)
+
+    if self.win_manager.spin_win > 0:
+        set_win_event(self)
+    set_total_event(self)
+```
+
+`get_board_multipliers()` in `game_calculations.py` sums all `M` symbol values still present on the board:
+
+```python
+def get_board_multipliers(self, multiplier_key: str = "multiplier") -> list:
+    board_mult = 0
+    mult_info = []
+    for reel, _ in enumerate(self.board):
+        for row, _ in enumerate(self.board[reel]):
+            if self.board[reel][row].check_attribute(multiplier_key):
+                board_mult += self.board[reel][row].get_attribute(multiplier_key)
+                mult_info.append(
+                    {"reel": reel, "row": row,
+                     "value": self.board[reel][row].get_attribute(multiplier_key)}
+                )
+    return max(1, board_mult), mult_info
+```
+
+## Game flow (`gamestate.py`)
+
+```python
+def run_spin(self, sim: int, simulation_seed=None):
+    self.reset_seed(sim)
+    self.repeat = True
+    while self.repeat:
+        self.reset_book()
+        self.draw_board()
+
+        self.get_scatterpays_update_wins()
+        self.emit_tumble_win_events()
+
+        while self.win_data["totalWin"] > 0 and not (self.wincap_triggered):
+            self.tumble_game_board()
+            self.get_scatterpays_update_wins()
+            self.emit_tumble_win_events()
+
+        self.set_end_tumble_event()
+        self.win_manager.update_gametype_wins(self.gametype)
+
+        if self.check_fs_condition() and self.check_freespin_entry():
+            self.run_freespin_from_base()
+
+        self.evaluate_finalwin()
+        self.check_repeat()
+
+    self.imprint_wins()
+
+def run_freespin(self):
+    self.reset_fs_spin()
+    while self.fs < self.tot_fs:
+        # Global multiplier resets to 1 at the start of each freespin
+        self.update_freespin()
+        self.draw_board()
+
+        self.get_scatterpays_update_wins()
+        self.emit_tumble_win_events()
+
+        while self.win_data["totalWin"] > 0 and not (self.wincap_triggered):
+            self.tumble_game_board()
+            self.update_global_mult()  # Increment multiplier with every tumble
+
+            self.get_scatterpays_update_wins()
+            self.emit_tumble_win_events()
+
+        self.set_end_tumble_event()
+        self.win_manager.update_gametype_wins(self.gametype)
+
+        if self.check_fs_condition():
+            self.update_fs_retrigger_amt()
+
+    self.end_freespin()
+```
+
+Note that `update_global_mult()` is called **after** `tumble_game_board()` and **before** `get_scatterpays_update_wins()` — the incremented multiplier applies to the wins evaluated on the newly tumbled board.
+
+## Game-specific events
+
+| Event type | When emitted | Contents |
+|---|---|---|
+| `winInfo` | After every scatter-pay evaluation (each tumble step) | Winning combinations, positions, cluster sizes, multipliers applied |
+| `tumbleBanner` | After each tumble — from `emit_tumble_win_events()` | Cumulative tumble win with global multiplier applied |
+| `setWin` | After all tumbles complete for a spin | Total win for the full spin (reveal → next reveal) |
+| `setTotalWin` | After `setWin` | Cumulative round win. In basegame equals `setWin`; in freegame increments across spins. |
+
+## Comparison with cluster game
+
+| Feature | Cluster (`0_0_cluster`) | Scatter (`0_0_scatter`) |
+|---|---|---|
+| Board size | 7×7 | 6×5 |
+| Min cluster size | 5 | 8 |
+| Grid position multipliers | Yes (freegame) | No |
+| Board multiplier symbols | No | Yes (M symbol, freegame only) |
+| Global multiplier resets | Each freespin | Each freespin |
+| Global multiplier increments | +1 per freespin | +1 per tumble (within a spin) |
+| Freespin trigger | 4+ Scatters | 3+ Scatters |
+| Freespins awarded | Fixed count table | 2 × scatter count |
+
+<Tip>
+  The scatter game is the most complex sample game. Read `game_executables.py` alongside `gamestate.py` — most of the freegame multiplier logic lives in the executables layer rather than `gamestate.py` itself.
+</Tip>

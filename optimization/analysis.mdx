@@ -1,0 +1,122 @@
+---
+title: "Game Analysis"
+description: "Generate a PAR sheet and analyze the optimized win distribution, including per-symbol hit-rates, RTP contributions by win range, and game-type breakdowns."
+---
+
+Game analysis produces an Excel (`.xlsx`) PAR sheet summarizing key statistics of the optimized win distribution. It is designed to be run after optimization is complete.
+
+## Prerequisites
+
+- A completed optimization run — analysis uses the **optimized** lookup tables (`lookUpTable_<mode>_0.csv`), not the raw simulation output.
+- `force_record_<mode>.json` files in `library/forces/`, containing the event data recorded during simulation.
+- `GameConfig.paytable` populated with symbol names so the analysis can resolve `kind`/`symbol` pairs to readable names.
+
+<Note>
+For meaningful statistics, run at least 100,000 simulations per mode before analyzing. Smaller batches produce noisy hit-rate and RTP estimates that are not representative of the final game distribution.
+</Note>
+
+## Enabling analysis in run.py
+
+Set `run_analysis` to `True` in the `run_conditions` dictionary:
+
+```python
+run_conditions = {
+    "run_sims":         True,
+    "run_optimization": True,
+    "run_analysis":     True,
+}
+```
+
+Then call `create_stat_sheet` after the optimization step:
+
+```python
+from utils.game_analytics.run_analysis import create_stat_sheet
+
+custom_keys = [{"symbol": "scatter"}]
+create_stat_sheet(gamestate, custom_keys=custom_keys)
+```
+
+## What the analysis uses
+
+| Source | Purpose |
+|---|---|
+| `lookUpTableSegmented_<mode>.csv` | Determines which game type (basegame, freegame) contributed to each simulation's final win |
+| `force_record_<mode>.json` | Provides event frequencies — `symbol`, `kind`, `mult`, `gametype` per recorded win |
+| `GameConfig.paytable` | Maps `(kind, symbol)` pairs to payout amounts and provides valid symbol names |
+
+Force records must use the following key format to be recognized by the analysis tool:
+
+```python
+{"symbol": "<name>", "kind": "<num_symbols_in_win>"}
+```
+
+For example, the `Lines` class records wins as:
+
+```python
+def record_line(kind: int, symbol: str, mult: int, gametype: str) -> None:
+    gamestate.record({"kind": kind, "symbol": symbol, "mult": mult, "gametype": gametype})
+```
+
+## The run() function and custom search keys
+
+The `run()` function inside `run_analysis.py` accepts an optional `custom_keys` argument. Each entry is a dictionary matching fields in `gamestate.record()` calls — the analysis will compute hit-rates specifically for events matching those keys.
+
+```python
+# Hit-rate for any event where symbol == "scatter"
+custom_keys = [{"symbol": "scatter"}]
+create_stat_sheet(gamestate, custom_keys=custom_keys)
+```
+
+This is useful for tracking the frequency of specific events (e.g., scatter triggers, wild substitutions) that are not captured by the standard win-range bins.
+
+## PAR sheet output
+
+The generated `.xlsx` file contains:
+
+- **Per-symbol hit-rates** — frequency of each `(kind, symbol)` combination, using symbol names from `GameConfig.paytable`.
+- **Per-range RTP contributions** — how much each win-range bucket contributes to total RTP.
+- **Simulation counts by win range** — how many simulations fall into each range, useful for checking distribution coverage.
+- **Game-type breakdown** — hit-rates and RTP split by `basegame` vs `freegame`, sourced from `lookUpTableSegmented_<mode>.csv` and the `gametype` field in force records.
+
+## Analyzing win distributions
+
+Once a lookup table has been optimized, you can inspect the resulting win distribution — a dictionary where keys are all unique, ordered payout values and values are the probability of obtaining each payout.
+
+### Comparing alternative lookup tables
+
+The optimization algorithm outputs several viable candidate lookup tables to `library/optimization_files/`. The `swap_lookups` utility lets you swap out the weights in `lookUpTable_<mode>_0.csv` with weights from any of these candidates, so you can compare how different distributions perform without re-running the optimizer.
+
+## File hash checking
+
+Use `get_file_hash()` to print the SHA-256 value of a file or all non-Python files in a directory. Compare these values against the SHA values stored in `config.json` to verify that file contents have not been altered since the configs were generated.
+
+```python
+from utils.get_file_hash import get_file_hash
+
+# Single file
+get_file_hash("library/lookup_tables/lookUpTable_base_0.csv")
+
+# All non-Python files in a directory
+get_file_hash("library/lookup_tables/")
+```
+
+## Understanding runtime RTP output
+
+During a simulation or optimization run, each thread prints a summary line when it finishes:
+
+```
+Thread 0 finished with 1.632 RTP. [baseGame: 0.043, freeGame: 1.588]
+```
+
+This means thread 0 completed with a raw (pre-optimization) RTP of 163.2%, with 4.3% contributed by basegame wins and 158.8% by freegame wins. Raw RTP is higher than the target (e.g., 97%) because forced simulations — such as wincap and freegame triggers — are overrepresented in the raw pool. The optimization algorithm adjusts the selection weights to bring the final sampled RTP in line with the target.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Optimization algorithm" icon="gear" href="/optimization/algorithm">
+    Learn how the optimizer adjusts weights to hit the RTP target.
+  </Card>
+  <Card title="Setting up optimization" icon="sliders" href="/optimization/setup">
+    Configure conditions, scaling, and parameters for your game.
+  </Card>
+</CardGroup>

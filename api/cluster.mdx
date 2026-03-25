@@ -1,0 +1,178 @@
+---
+title: "Cluster Wins"
+description: "Evaluate wins based on connected groups of adjacent like-symbols anywhere on the board."
+---
+
+The `Cluster` class detects groups of adjacent matching symbols (clusters) and pays out when the cluster meets a minimum size threshold. Adjacency is defined as sharing the same reel or row — diagonal connections do not count.
+
+## How cluster detection works
+
+Clusters are found using a breadth-first search (BFS) algorithm:
+
+1. Each non-wild, unvisited position on the board is used as a seed.
+2. All orthogonally adjacent positions matching the seed symbol (or wild) are recursively added to the cluster.
+3. The final cluster size is compared against `config.paytable` to determine the payout.
+
+Wild symbols contribute to any cluster they are adjacent to, and can simultaneously belong to clusters of different symbols.
+
+## Configuration
+
+Because cluster sizes can range from the minimum up to the full board size, it is common to use range-based payouts instead of individual entries. The `convert_range_table()` method on `Config` generates all `config.paytable` entries from a compact `pay_group` definition:
+
+```python
+pay_group = {
+    ((min_kind, max_kind), symbol): payout,
+    ...
+}
+```
+
+<ParamField path="config.paytable" type="dict" required>
+  Maps `(cluster_size, symbol)` tuples to payout multipliers. Generated from `pay_group` via `config.convert_range_table(pay_group)`.
+
+  ```python
+  pay_group = {
+      ((5, 5),  "H1"): 1.0,
+      ((6, 7),  "H1"): 3.0,
+      ((8, 10), "H1"): 8.0,
+      ((11, 25), "H1"): 25.0,
+  }
+  config.convert_range_table(pay_group)
+  # Generates: {(5,"H1"): 1.0, (6,"H1"): 3.0, (7,"H1"): 3.0, (8,"H1"): 8.0, ...}
+  ```
+
+  Range bounds are inclusive.
+</ParamField>
+
+## `Cluster.get_cluster_data()`
+
+```python
+Cluster.get_cluster_data(
+    config: Config,
+    board: list[list[Symbol]],
+    global_multiplier: int,
+    multiplier_key: str = "multiplier",
+    wild_key: str = "wild",
+) -> dict
+```
+
+Top-level entry point. Calls `get_clusters()` then `evaluate_clusters()` and returns win data.
+
+<ParamField path="config" type="Config" required>
+  Game configuration with `config.paytable` populated.
+</ParamField>
+
+<ParamField path="board" type="list[list[Symbol]]" required>
+  Active game board indexed as `board[reel][row]`.
+</ParamField>
+
+<ParamField path="global_multiplier" type="int" required>
+  Scalar multiplier applied to all cluster wins.
+</ParamField>
+
+<ParamField path="multiplier_key" type="str" default="multiplier">
+  Symbol attribute key for reading per-symbol multiplier values.
+</ParamField>
+
+<ParamField path="wild_key" type="str" default="wild">
+  Symbol attribute key identifying wild symbols.
+</ParamField>
+
+### Return value
+
+```python
+win_data = {
+    "totalWin": float,
+    "wins": [
+        {
+            "symbol": str,
+            "clusterSize": int,
+            "win": float,
+            "positions": [{"reel": int, "row": int}, ...],
+            "meta": {
+                "globalMult": int,
+                "clusterMult": int,
+                "winWithoutMult": float,
+                "overlay": {"reel": int, "row": int},
+            },
+        }
+    ],
+}
+```
+
+<ResponseField name="totalWin" type="float">
+  Sum of all cluster wins for this board state.
+</ResponseField>
+
+<ResponseField name="wins" type="list">
+  One entry per paying cluster.
+
+  <Expandable title="win entry fields">
+    <ResponseField name="symbol" type="str">
+      Name of the winning symbol.
+    </ResponseField>
+    <ResponseField name="clusterSize" type="int">
+      Number of symbols in the cluster (used for paytable lookup).
+    </ResponseField>
+    <ResponseField name="win" type="float">
+      Final payout: `paytable[(clusterSize, symbol)] × clusterMult × globalMult`.
+    </ResponseField>
+    <ResponseField name="positions" type="list">
+      All positions in the cluster as `{"reel": int, "row": int}`.
+    </ResponseField>
+    <ResponseField name="meta" type="object">
+      <Expandable title="meta fields">
+        <ResponseField name="globalMult" type="int">
+          The `global_multiplier` passed into `get_cluster_data()`.
+        </ResponseField>
+        <ResponseField name="clusterMult" type="int">
+          Sum of `multiplier` attribute values from all positions in the cluster. Minimum value is `1`.
+        </ResponseField>
+        <ResponseField name="winWithoutMult" type="float">
+          Raw payout from `config.paytable` before multipliers.
+        </ResponseField>
+        <ResponseField name="overlay" type="object">
+          Board position to display the win amount overlay, calculated as the position closest to the cluster's center-of-mass: `{"reel": int, "row": int}`.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Exploding symbols and tumble integration
+
+During `evaluate_clusters()`, every symbol in a paying cluster has its `explode` attribute set to `True`. This signals the `Tumble` class to remove those symbols and cascade new ones down. The typical tumble loop looks like:
+
+```python
+# Initial evaluation
+self.win_data = Cluster.get_cluster_data(
+    self.config, self.board, global_multiplier=self.global_mult
+)
+self.win_manager.update_spinwin(self.win_data["totalWin"])
+
+# Cascade loop
+while self.win_data["totalWin"] > 0 and not self.wincap_triggered:
+    self.tumble_board()
+    self.win_data = Cluster.get_cluster_data(
+        self.config, self.board, global_multiplier=self.global_mult
+    )
+    self.win_manager.update_spinwin(self.win_data["totalWin"])
+    self.emit_tumble_win_events()
+```
+
+## Lower-level methods
+
+### `Cluster.get_clusters(board, wild_key)`
+
+Returns a `dict` mapping symbol names to lists of clusters, where each cluster is a list of `(reel, row)` tuples. All clusters of size ≥ 1 are returned; paytable filtering happens in `evaluate_clusters()`.
+
+### `Cluster.evaluate_clusters(config, board, clusters, global_multiplier, multiplier_key, return_data)`
+
+Determines payouts from the cluster dict, updates symbol `explode` flags, and populates `return_data`. Returns `(board, return_data, total_win)`.
+
+### `Cluster.record_cluster_wins(gamestate)`
+
+Writes force-file entries keyed by `kind` (cluster size), `symbol`, combined `mult`, and `gametype`.
+
+<Tip>
+Cluster pays games almost always use a cascading/tumble mechanic. Pair `get_cluster_data()` with `tumble_board()` from the `Tumble` class for a complete cascade loop.
+</Tip>

@@ -1,0 +1,274 @@
+---
+title: "Game Events"
+description: "Understand how to construct and emit game events — the JSON objects returned by the RGS play/ API that drive all frontend display."
+---
+
+Events are the primary output of a simulation. When the RGS responds to a `play/` request, the response body contains the `events` array from the simulation's book entry. The frontend reads this array sequentially to animate the board, update win counters, display multipliers, and transition between game states.
+
+Anything not present in the events — or not implied by them — cannot be shown to the player.
+
+## Event structure
+
+Every event follows the same base shape:
+
+```python
+event = {
+    "index": int,    # sequential counter within this simulation
+    "type":  str,    # unique keyword identifying the event
+    # ... additional fields specific to this event type
+}
+```
+
+- `index` tracks the order of events within a simulation, starting at `0`.
+- `type` is a one-word string the frontend uses to dispatch the event to the correct handler.
+- All other fields are event-specific and can hold any JSON-serializable value.
+
+## Emitting events
+
+Once you have constructed an event dict, append it to the book with:
+
+```python gamestate.py
+gamestate.book.add_event(event)
+```
+
+For common event types, the SDK provides ready-made functions in `src.events.events`. Import and call them directly:
+
+```python gamestate.py
+from src.events.events import update_freespin_event
+
+def run_freespin(self):
+    ...
+    self.update_freespin()       # increments counter and calls update_freespin_event
+    ...
+```
+
+<Tip>
+  Emit each event immediately after the game state change it describes. Events provide a snapshot of the current state, so emitting them out of order will cause the frontend to display incorrect intermediate states.
+</Tip>
+
+## Standard event types
+
+The example games use the following event types. You can adopt the same types or define your own — the frontend must handle whatever types you emit.
+
+### reveal
+
+Emitted once at the start of each spin (base or free). Contains the full board, padding positions, game type, and anticipation data.
+
+```json
+{
+    "index": 0,
+    "type": "reveal",
+    "board": [...],
+    "paddingPositions": [...],
+    "gameType": "basegame",
+    "anticipation": [...]
+}
+```
+
+Call `reveal_event(gamestate)` from `src.Events.Events` to emit this event. It serialises all symbols using `json_ready_sym()`, which includes only the special attributes you have configured.
+
+### winInfo
+
+Emitted after win evaluation. Contains the total win amount for this spin and the full list of winning combinations.
+
+```json
+{
+    "index": 1,
+    "type": "winInfo",
+    "totalWin": 10,
+    "wins": [
+        {
+            "symbol": "L5",
+            "kind": 3,
+            "win": 10,
+            "positions": [{"reel": 0, "row": 0}, {"reel": 1, "row": 0}, {"reel": 2, "row": 0}],
+            "meta": {}
+        }
+    ]
+}
+```
+
+Call `win_info_event(gamestate)` to emit this. The `wins` list is taken directly from `self.win_data["wins"]`.
+
+### setWin
+
+Sets the win counter display for a single spin outcome. The `winLevel` field controls which win-level animation the frontend plays.
+
+```json
+{
+    "index": 2,
+    "type": "setWin",
+    "amount": 10,
+    "winLevel": 2
+}
+```
+
+Call `set_win_event(gamestate)` to emit this.
+
+### setTotalWin
+
+Updates the running total win banner, including wins from all spins so far in the round.
+
+```json
+{
+    "index": 3,
+    "type": "setTotalWin",
+    "amount": 10
+}
+```
+
+Call `set_total_event(gamestate)` to emit this.
+
+### finalWin
+
+Emitted once at the very end of the simulation. Contains the final payout multiplier for the round.
+
+```json
+{
+    "index": 4,
+    "type": "finalWin",
+    "amount": 10
+}
+```
+
+Call `final_win_event(gamestate)` to emit this. `evaluate_finalwin()` calls it automatically.
+
+### freespinUpdate
+
+Emitted at the start of each free spin to update the spin counter in the UI.
+
+```json
+{
+    "index": 5,
+    "type": "freespinUpdate",
+    "currentSpin": 1,
+    "totalSpins": 10
+}
+```
+
+Call `update_freespin_event(gamestate)` directly, or use `self.update_freespin()` which wraps this call.
+
+## Full example: simulation 58
+
+The following is the complete event sequence for simulation 58 of the `0_0_lines` sample game — a 10x winning spin with no free spins:
+
+```json
+{
+    "id": 58,
+    "payoutMultiplier": 10,
+    "events": [
+        {
+            "index": 0,
+            "type": "reveal",
+            "board": [...],
+            "paddingPositions": [...],
+            "gameType": "basegame",
+            "anticipation": [...]
+        },
+        {
+            "index": 1,
+            "type": "winInfo",
+            "totalWin": 10,
+            "wins": [
+                {
+                    "symbol": "L5",
+                    "kind": 3,
+                    "win": 10,
+                    "positions": [...],
+                    "meta": {}
+                }
+            ]
+        },
+        {
+            "index": 2,
+            "type": "setWin",
+            "amount": 10,
+            "winLevel": 2
+        },
+        {
+            "index": 3,
+            "type": "setTotalWin",
+            "amount": 10
+        },
+        {
+            "index": 4,
+            "type": "finalWin",
+            "amount": 10
+        }
+    ],
+    "criteria": "basegame",
+    "baseGameWins": 0.1,
+    "freeGameWins": 0.0
+}
+```
+
+The five events correspond to the five calls in a typical `run_spin()` implementation:
+
+1. `reveal_event()` — board is drawn
+2. `win_info_event()` — wins are evaluated
+3. `set_win_event()` — spin win counter set
+4. `set_total_event()` — total win banner updated
+5. `final_win_event()` — round closed
+
+## Available event functions
+
+Import event functions from `src.Events.Events`:
+
+```python
+from src.Events.Events import (
+    reveal_event,
+    win_info_event,
+    set_win_event,
+    set_total_event,
+    final_win_event,
+    update_freespin_event,
+    fs_trigger_event,
+    freespin_end_event,
+    update_global_mult_event,
+    tumble_board_event,
+    update_tumble_win_event,
+    wincap_event,
+)
+```
+
+| Function | When to call |
+|---|---|
+| `reveal_event(gamestate)` | After `draw_board()`, once per spin |
+| `win_info_event(gamestate)` | After win evaluation, when `spin_win > 0` |
+| `set_win_event(gamestate)` | After `win_info_event`, when `spin_win > 0` |
+| `set_total_event(gamestate)` | After every win evaluation, including zero wins |
+| `final_win_event(gamestate)` | At end of simulation, called by `evaluate_finalwin()` |
+| `update_freespin_event(gamestate)` | At start of each free spin |
+| `fs_trigger_event(gamestate, ...)` | When scatter conditions trigger free spins |
+| `freespin_end_event(gamestate)` | After all free spins are exhausted |
+| `update_global_mult_event(gamestate)` | When global multiplier changes |
+| `tumble_board_event(gamestate)` | After symbols are removed in a tumble |
+| `wincap_event(gamestate)` | When running win hits the wincap |
+
+<Note>
+  All event functions append directly to `gamestate.book['events']`. They use deep copies internally, so the event dictionary is not affected by later modifications to `gamestate` properties.
+</Note>
+
+## Best practices
+
+- Always emit `reveal_event()` as the first event of every spin.
+- Always emit `set_total_event()` after every win evaluation, even zero-win spins — the frontend expects it.
+- For tumbling games, emit `tumble_board_event()` and `update_tumble_win_event()` after each cascade before re-evaluating wins.
+- Never emit events for future state. Each event is a snapshot of what just happened.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Implementing GameState" icon="code" href="/guides/gamestate">
+    The run_spin() loop where events are emitted.
+  </Card>
+  <Card title="Win Types" icon="trophy" href="/guides/win-types">
+    Win evaluation functions that produce win_data for winInfo events.
+  </Card>
+  <Card title="Events API reference" icon="book" href="/api/events">
+    Full reference for all event functions.
+  </Card>
+  <Card title="Wallet Manager API" icon="wallet" href="/api/wallet-manager">
+    Win tracking that feeds setWin and setTotalWin amounts.
+  </Card>
+</CardGroup>

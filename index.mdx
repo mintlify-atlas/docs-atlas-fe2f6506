@@ -1,97 +1,89 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Stake Engine Math SDK"
+description: "A Python-based math engine for defining slot game rules, simulating outcomes, and optimizing win distributions for deployment on Stake Engine."
 ---
 
-## Setting up
+The Stake Engine Math SDK is a comprehensive framework for building, simulating, and optimizing slot game math. It generates all backend files, lookup tables, and simulation results required to publish a game on [Stake Engine](https://engine.stake.com/) — the Remote Gaming Server (RGS) powering [Stake.com](https://stake.com).
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Run your first game simulation in minutes using a provided sample game.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="download" href="/installation">
+    Set up Python, virtual environment, and optional Rust for optimization.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="lightbulb" href="/concepts/game-format">
+    Understand the game format, file structure, and simulation lifecycle.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/config">
+    Full reference for all public classes and functions in the SDK.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What the SDK does
 
-Everything you need to create world-class documentation.
+The Math SDK handles the complete backend pipeline for a slot game:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+<Steps>
+  <Step title="Define your game">
+    Configure game rules, reelstrips, paytable, and bet modes in `game_config.py` using the `GameConfig` class.
+  </Step>
+  <Step title="Simulate outcomes">
+    Run `create_books()` to execute thousands (or millions) of game simulations across multiple CPU threads, producing compressed event books and lookup tables.
+  </Step>
+  <Step title="Optimize win distribution">
+    Run the Rust-powered optimization algorithm to balance your game to a target RTP, adjusting simulation weights to meet payout and hit-rate requirements.
+  </Step>
+  <Step title="Generate config files">
+    Call `generate_configs()` to produce the frontend, backend, and math configuration files required for publishing to Stake Engine.
+  </Step>
+</Steps>
 
-## Need inspiration?
+## Key features
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<CardGroup cols={2}>
+  <Card title="Four win types" icon="trophy">
+    Built-in support for Lines, Ways, Cluster, and Scatter pay calculations with multiplier strategies.
+  </Card>
+  <Card title="Multi-threaded simulation" icon="microchip">
+    Distribute simulations across multiple CPU threads for fast generation of large result sets.
+  </Card>
+  <Card title="Rust optimization" icon="bolt">
+    Iterative weighted sampling algorithm implemented in Rust for high-performance RTP balancing.
+  </Card>
+  <Card title="Event-driven architecture" icon="share-nodes">
+    All game outcomes are expressed as ordered event sequences, consumed directly by the RGS `play/` API.
+  </Card>
+  <Card title="Sample games" icon="gamepad">
+    Five complete example games covering Lines, Ways, Cluster, Scatter, and Expanding Wilds mechanics.
+  </Card>
+  <Card title="PAR sheet generation" icon="chart-bar">
+    Automatic hit-rate and RTP analysis with Excel export for regulatory and design review.
+  </Card>
+</CardGroup>
+
+## Project structure
+
+The SDK separates reusable engine logic (in `src/`) from game-specific implementations (in `games/<game_id>/`):
+
+```
+math-sdk/
+├── src/                    # Shared engine modules
+│   ├── calculations/       # Win type implementations (lines, ways, cluster, scatter)
+│   ├── config/             # Base Config class
+│   ├── events/             # Event emission functions
+│   ├── state/              # GameState, Executables, Conditions
+│   └── wins/               # WalletManager, multiplier strategies
+├── games/                  # Game implementations
+│   └── <game_id>/
+│       ├── game_config.py  # GameConfig (extends Config)
+│       ├── gamestate.py    # GameState with run_spin()
+│       ├── run.py          # Simulation entry point
+│       └── library/        # Generated output files
+├── optimization_program/   # Rust optimization binary
+└── utils/                  # Analysis and utility scripts
+```
+
+<Note>
+  Games uploaded to Stake Engine must consist of static pre-computed files. The Math SDK generates all required files — books, lookup tables, and config — in the correct format for the RGS.
+</Note>

@@ -1,0 +1,122 @@
+---
+title: "Game Structure"
+description: "The recommended directory layout for a Stake Engine game, what each file does, and how game-specific code relates to the shared engine source."
+---
+
+## Directory layout
+
+All games follow a standard directory structure. The recommended starting point is to copy `games/template/` and rename it to your game ID.
+
+```
+games/<game_id>/
+├── library/
+│   ├── books/
+│   ├── books_compressed/
+│   ├── configs/
+│   ├── forces/
+│   └── lookup_tables/
+├── reels/
+├── readme.txt
+├── run.py
+├── game_config.py
+├── game_executables.py
+├── game_calculations.py
+├── game_events.py
+├── game_override.py
+└── gamestate.py
+```
+
+The `library/` subdirectories are created automatically when simulations are run if they do not already exist. `readme.txt` is for developer notes about game mechanics and any miscellaneous information relevant to that game.
+
+---
+
+## File reference
+
+| File | Purpose |
+|---|---|
+| `game_config.py` | Defines the `GameConfig` class (inherits `Config`). Sets game ID, RTP, board dimensions, paytable, reel strips, special symbols, and `BetMode` definitions with their `Distribution` criteria. |
+| `gamestate.py` | Defines the `GameState` class. Contains `run_spin()` (required entry point for every simulation) and `run_freespin()` (required if the game has a freespin mode). |
+| `run.py` | Sets simulation parameters and calls `create_books()` and `generate_configs()`. This is the script you execute to produce all output files. |
+| `game_executables.py` | Groups commonly used game actions (board drawing, win evaluation, freespin triggering) into named functions. Inherits from the engine `Executables` class. |
+| `game_calculations.py` | Handles game-specific board calculations. Inherits from `GameExecutables`. |
+| `game_events.py` | Contains event-emission functions specific to this game. Events are imported explicitly and not attached to the gamestate object. |
+| `game_override.py` | First in the Python MRO. Use this to override core engine functions (such as `reset_book()`) without modifying shared source code. |
+
+---
+
+## `src/` vs `games/`
+
+The repository is split into two top-level areas:
+
+- **`src/`** — reusable engine code shared across all games. This includes win calculators, the wallet manager, the state machine, event helpers, config base classes, and output writers. You should not need to modify files in `src/` for normal game development.
+- **`games/<game_id>/`** — all game-specific logic. Every file in the directory layout above lives here. Python's Method Resolution Order (MRO) allows game files to selectively override engine behaviour without copying shared code.
+
+When writing a new mechanic, ask: will this be reused by other games? If yes, it belongs in `src/`. If it is specific to one title, it belongs in `games/<game_id>/`.
+
+---
+
+## Run-file parameters
+
+The `run.py` file controls how simulations are executed. The following parameters are passed to `create_books()`:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `num_threads` | `int` | Number of Python processes for parallel simulation |
+| `rust_threads` | `int` | Number of threads used by the Rust compiler |
+| `batching_size` | `int` | Number of simulations executed per thread per batch |
+| `compression` | `bool` | `True` outputs `.json.zst`; `False` outputs `.json` |
+| `profiling` | `bool` | `True` generates a flame graph SVG (single-thread only) |
+| `num_sim_args` | `dict[str, int]` | Keys must match bet mode names defined in `GameConfig`; values are the simulation counts |
+
+```python
+if __name__ == "__main__":
+
+    num_threads = 1
+    rust_threads = 20
+    batching_size = 50000
+    compression = False
+    profiling = False
+
+    num_sim_args = {
+        "base": int(10),
+        "bonus": int(10),
+    }
+
+    config = GameConfig()
+    gamestate = GameState(config)
+
+    create_books(
+        gamestate,
+        config,
+        num_sim_args,
+        batching_size,
+        num_threads,
+        compression,
+        profiling,
+    )
+    generate_configs(gamestate)
+```
+
+---
+
+## Config output files
+
+After simulations complete, `generate_configs(gamestate)` writes three JSON files to `library/configs/`:
+
+| File | Consumer | Contents |
+|---|---|---|
+| `config_fe.json` | Frontend | Symbol definitions, paytable, betmode display info, reel layout |
+| `config.json` | Backend / RGS | File hash values, betmode costs, game metadata required for verification |
+| `config_math.json` | Optimization algorithm | Parameters used when running the weight-optimization step |
+
+---
+
+## Library folders
+
+| Folder | Contents |
+|---|---|
+| `books/` | Uncompressed JSONL simulation output (`.json`) |
+| `books_compressed/` | Compressed simulation output (`.json.zst`) |
+| `configs/` | The three config JSON files described above |
+| `forces/` | Force-record files used for PAR sheet generation and optimization; populated by `self.record()` calls in game logic |
+| `lookup_tables/` | CSV payout summary files, including segmented and criteria-mapping variants |

@@ -1,80 +1,191 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Quick start"
+description: "Run the sample lines game and inspect real output from the Stake Engine Math SDK in under five minutes."
 ---
 
-## Get started in three steps
+## Prerequisites
 
-Get your documentation site running locally and make your first customization.
+Before you begin, make sure you have the following installed:
 
-### Step 1: Set up your local environment
+- **Python 3.12 or later** — required. Earlier versions are not supported.
+- **pip** — included with Python 3.12+.
+- **Make** — recommended for the one-command setup. Available by default on macOS and Linux; install via [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/) or [Chocolatey](https://chocolatey.org/) on Windows.
+- **Rust/Cargo** — only needed if you plan to run the optimization algorithm. See [Installation](/installation#installing-rust-cargo) for details.
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
 
-### Step 2: Deploy your changes
+<Step title="Clone the repository">
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+Clone the Math SDK to your local machine:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+```bash
+git clone git@github.com:StakeEngine/math-sdk.git
+cd math-sdk
+```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+</Step>
 
-### Step 3: Go live
+<Step title="Run make setup">
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+```bash
+make setup
+```
+
+This single command does the following in order:
+
+1. Creates a Python virtual environment at `env/`.
+2. Upgrades `pip` inside the environment.
+3. Installs all dependencies listed in `requirements.txt` (numpy, zstandard, pytest, boto3, xlsxwriter, and more).
+4. Installs the `stakeengine` package itself in editable mode (`pip install -e .`), so any changes you make to the source take effect immediately without reinstalling.
+
+When it finishes you will see:
+
+```
+Virtual environment ready.
+To activate it, run:
+source env/bin/activate
+```
+
+Activate the environment before running any Python commands directly:
+
+<CodeGroup>
+
+```bash macOS / Linux
+source env/bin/activate
+```
+
+```bash Windows
+env\Scripts\activate.bat
+```
+
+</CodeGroup>
+
+<Note>
+  `make run` activates the virtual environment automatically, so you only need to activate manually when running scripts directly.
+</Note>
+
+</Step>
+
+<Step title="Run the sample lines game">
+
+The SDK ships with several example games under `games/`. Run the 3-reel, 5-reel lines game:
+
+```bash
+make run GAME=0_0_lines
+```
+
+This executes `games/0_0_lines/run.py` inside the virtual environment. With the default settings it simulates 10,000 base-game rounds and 10,000 bonus rounds across 10 CPU threads, then runs the optimization algorithm and generates a PAR sheet.
+
+You will see per-thread RTP output as each thread completes:
+
+```
+Thread 0 finished with 1.632 RTP. [baseGame: 0.043, freeGame: 1.588]
+```
+
+<Tip>
+  For a faster first run, open `games/0_0_lines/run.py` and reduce `num_sim_args` values to `100` and set `compression = False`. This produces human-readable JSON output in a few seconds.
+</Tip>
+
+</Step>
+
+<Step title="Inspect the output">
+
+All output is written to `library/` inside the game directory. The publish-ready files are in `library/publish_files/`.
+
+```
+library/
+├── books/
+│   ├── books_base.jsonl          # One JSON object per simulation (uncompressed)
+│   └── books_base.jsonl.zst      # Compressed variant for production
+├── lookup_tables/
+│   ├── lookUpTable_base.csv      # id, weight, payoutMultiplier
+│   ├── lookUpTable_base_0.csv    # Optimized weights (after optimization run)
+│   └── lookUpTableIdToCriteria_base.csv  # Maps sim ID to criteria label
+├── configs/
+│   └── game_config.json          # RGS game configuration
+└── forces/
+    └── force_record_base.json    # Forced-outcome metadata for analysis
+```
+
+Open `library/books/books_base.jsonl` to inspect individual simulations. Each line is one simulation object. Here is simulation 58 from a 100-simulation uncompressed run:
+
+```json
+{
+    "id": 58,
+    "payoutMultiplier": 10,
+    "events": [
+        {
+            "index": 0,
+            "type": "reveal",
+            "board": [...],
+            "paddingPositions": [...],
+            "gameType": "basegame",
+            "anticipation": [...]
+        },
+        {
+            "index": 1,
+            "type": "winInfo",
+            "totalWin": 10,
+            "wins": [
+                {
+                    "symbol": "L5",
+                    "kind": 3,
+                    "win": 10,
+                    "positions": [...],
+                    "meta": {}
+                }
+            ]
+        },
+        {
+            "index": 2,
+            "type": "setWin",
+            "amount": 10,
+            "winLevel": 2
+        },
+        {
+            "index": 3,
+            "type": "setTotalWin",
+            "amount": 10
+        },
+        {
+            "index": 4,
+            "type": "finalWin",
+            "amount": 10
+        }
+    ],
+    "criteria": "basegame",
+    "baseGameWins": 0.1,
+    "freeGameWins": 0.0
+}
+```
+
+The `events` array is exactly what the RGS returns in the `play/` API response body when this simulation is selected. The frontend SDK consumes these events in order to drive the animation and UI.
+
+Open `library/lookup_tables/lookUpTable_base.csv` and find row 58:
+
+```
+58,1,10
+```
+
+The three columns are simulation ID, selection weight, and payout multiplier. The weight starts at `1` for every simulation; the optimization step adjusts these weights so the weighted-average payout matches your RTP target.
+
+</Step>
+
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation" icon="wrench" href="/installation">
+    Full system requirements and manual setup instructions.
+  </Card>
+  <Card title="Game structure" icon="folder-open" href="/concepts/game-structure">
+    Understand what each file in a game directory does.
+  </Card>
+  <Card title="Configuration guide" icon="sliders" href="/guides/configuration">
+    Configure paytables, reel strips, and bet modes for your own game.
+  </Card>
+  <Card title="Lines game example" icon="grid-2" href="/examples/lines-game">
+    A detailed walkthrough of the `0_0_lines` sample game.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

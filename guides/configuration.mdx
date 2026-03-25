@@ -1,0 +1,239 @@
+---
+title: "Game Configuration"
+description: "Set up your GameConfig class with paytables, reelstrips, special symbols, and bet modes to define all game parameters in one place."
+---
+
+Every game in the Stake Engine Math SDK starts with a `GameConfig` class that inherits from `Config`. This is where you declare everything the engine needs to run simulations: board dimensions, symbol payouts, reelstrip files, special symbol behaviour, and bet mode definitions.
+
+## The GameConfig class
+
+`GameConfig` must implement `__init__` and explicitly set all required fields. The engine will raise a `RuntimeError` at startup if any required field is missing or if an invalid symbol is detected on a reelstrip.
+
+```python game_config.py
+class GameConfig(Config):
+    def __init__(self):
+        super().__init__()
+        self.game_id = ""
+        self.provider_number = 0
+        self.working_name = ""
+        self.wincap = 0
+        self.win_type = "lines"  # "lines" | "ways" | "cluster" | "scatter"
+        self.rtp = 0
+
+        self.num_reels = 0
+        self.num_rows = [0] * self.num_reels
+
+        self.paytable = {
+            (kind, symbol): payout,
+        }
+
+        self.include_padding = True
+        self.special_symbols = {"property": ["sym_name"], ...}
+
+        self.freespin_triggers = {}
+        self.reels = {}
+        self.bet_modes = []
+```
+
+## Required fields
+
+<ParamField path="body.game_id" type="string" required>
+  Unique identifier string for this game, used by the RGS and frontend.
+</ParamField>
+
+<ParamField path="body.provider_number" type="number" required>
+  Numeric identifier assigned by the provider registry.
+</ParamField>
+
+<ParamField path="body.working_name" type="string" required>
+  Human-readable internal name used during development.
+</ParamField>
+
+<ParamField path="body.wincap" type="number" required>
+  Maximum win multiplier allowed in a single round. The engine caps all wins at this value.
+</ParamField>
+
+<ParamField path="body.win_type" type="string" required default="lines">
+  Win evaluation method. Must be one of `"lines"`, `"ways"`, `"cluster"`, or `"scatter"`.
+  See [Win Types](/guides/win-types) for details on each method.
+</ParamField>
+
+<ParamField path="body.rtp" type="number" required>
+  Target return-to-player percentage (e.g. `0.97` for 97%). Used by the optimization algorithm.
+</ParamField>
+
+<ParamField path="body.num_reels" type="number" required>
+  Number of reels on the board.
+</ParamField>
+
+<ParamField path="body.num_rows" type="number[]" required>
+  Array of row counts per reel. Length must equal `num_reels`.
+</ParamField>
+
+<ParamField path="body.paytable" type="object" required>
+  Dictionary mapping `(kind, symbol)` tuples to payout multipliers. See [Paytable format](#paytable-format) below.
+</ParamField>
+
+<ParamField path="body.special_symbols" type="object" required>
+  Dictionary mapping attribute names to lists of symbol names. See [Special symbols](#special-symbols) below.
+</ParamField>
+
+<ParamField path="body.freespin_triggers" type="object" required>
+  Scatter-count-to-free-spin-count mapping per game type. See [Scatter triggers](#scatter-triggers-and-anticipation).
+</ParamField>
+
+<ParamField path="body.reels" type="object" required>
+  Loaded reelstrip data, keyed by reel identifier. See [Reels](#reels) below.
+</ParamField>
+
+<ParamField path="body.bet_modes" type="object[]" required>
+  List of `BetMode` instances defining cost, RTP, and distribution criteria. See [Bet Modes](/guides/bet-modes).
+</ParamField>
+
+## Paytable format
+
+The paytable maps `(kind, symbol)` tuples to float payout multipliers, where `kind` is the number of matching symbols that trigger the win.
+
+```python game_config.py
+self.paytable = {
+    (5, "H1"): 500,
+    (4, "H1"): 200,
+    (3, "H1"): 50,
+    (5, "H2"): 250,
+    (4, "H2"): 100,
+    (3, "H2"): 25,
+    (5, "L1"): 50,
+    (4, "L1"): 20,
+    (3, "L1"): 10,
+    # Wild-only lines
+    (5, "W"): 1000,
+    (4, "W"): 400,
+    (3, "W"): 100,
+}
+```
+
+For games where a range of matching counts share a payout (common in cluster and scatter pays), use `pay_group` together with `convert_range_table()`:
+
+```python game_config.py
+self.pay_group = {
+    ((5, 7), "H1"): 50,    # 5, 6, or 7 H1 symbols all pay 50x
+    ((8, 10), "H1"): 150,
+    ((11, 25), "H1"): 500, # 11+ pays 500x
+}
+self.paytable = self.convert_range_table(self.pay_group)
+```
+
+## Reels
+
+Reelstrips are stored as CSV files and loaded into `self.reels` as a dictionary keyed by a short identifier string. Use `read_reels_csv()` to load each file:
+
+```python game_config.py
+reels = {
+    "BR0": "BR0.csv",
+    "BR1": "BR1.csv",
+    "FR0": "FR0.csv",
+}
+self.reels = {}
+for r, f in reels.items():
+    self.reels[r] = self.read_reels_csv(
+        str.join("/", [self.reels_path, f])
+    )
+```
+
+The keys you use here (`BR0`, `FR0`, etc.) must match the keys referenced in each `BetMode`'s `reel_weights` distribution condition. See [Bet Modes](/guides/bet-modes) for how reel weights are assigned per simulation.
+
+<Tip>
+  It is common to have multiple reelstrips per game type (e.g. `BR0`, `BR1`) with different RTP profiles. The optimization algorithm selects weights between them to hit your target RTP.
+</Tip>
+
+## Special symbols
+
+Special symbols are defined as a dictionary from attribute name to a list of symbol names:
+
+```python game_config.py
+self.special_symbols = {
+    "wild": ["W"],
+    "scatter": ["SC"],
+    "multiplier": ["M2", "M3", "M5", "M10"],
+}
+```
+
+Once a symbol is initialized, its attribute is accessible on the symbol object:
+
+```python gamestate.py
+if symbol.wild:
+    ...
+if symbol.scatter:
+    ...
+mult_value = symbol.get_attribute("multiplier")
+```
+
+By default, an attribute is set to `True`. To attach a meaningful value (such as a multiplier amount), override this in `gamestate.special_symbol_functions`.
+
+<Note>
+  A symbol is valid only if its name appears in either `self.paytable` or `self.special_symbols`. If a reelstrip contains an unrecognised symbol name, a `RuntimeError` is raised when the configuration is loaded.
+</Note>
+
+## Symbol validation
+
+The engine checks all symbols in loaded reelstrips against both `paytable` and `special_symbols` at startup. Any symbol name that does not appear in either structure is rejected:
+
+```python
+# Valid: "H1" is in paytable, "W" is in special_symbols["wild"]
+self.paytable = {(3, "H1"): 10, ...}
+self.special_symbols = {"wild": ["W"]}
+
+# RuntimeError: "BONUS" is in neither
+# If "BONUS" appears on a reelstrip, the engine will raise immediately
+```
+
+## Scatter triggers and anticipation
+
+Free spin entry from the base game and retriggers in the free game are configured per game type. The format is `{num_scatters: num_free_spins}`:
+
+```python game_config.py
+self.freespin_triggers = {
+    self.basegame_type: {3: 10, 4: 15, 5: 20},
+    self.freegame_type: {2: 4, 3: 6, 4: 8, 5: 10},
+}
+```
+
+The `check_fs_condition()` method reads this configuration to determine whether free spins should be triggered or retriggered after each spin.
+
+## Game type constants
+
+The `basegame_type` and `freegame_type` constants default to `"basegame"` and `"freegame"` respectively. They are used throughout configuration and game state to index game-type-specific values:
+
+```python game_config.py
+# Use them as keys in any per-gametype config dict
+self.multiplier_values = {
+    self.basegame_type: {1: 100, 2: 50, 3: 10},
+    self.freegame_type: {2: 20, 3: 50, 5: 20, 10: 10, 20: 1},
+}
+```
+
+```python gamestate.py
+# Read back the correct values for the current game type at runtime
+multiplier = get_random_outcome(
+    self.config.multiplier_values[self.gametype]
+)
+```
+
+All simulations start in `basegame_type`. The engine transitions to `freegame_type` automatically when `reset_fs_spin()` is called at the start of `run_freespin()`.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Bet Modes & Distributions" icon="sliders" href="/guides/bet-modes">
+    Configure cost, RTP targets, and per-simulation win criteria.
+  </Card>
+  <Card title="Implementing GameState" icon="code" href="/guides/gamestate">
+    Use your config in the run_spin() simulation loop.
+  </Card>
+  <Card title="Win Types" icon="trophy" href="/guides/win-types">
+    Choose between lines, ways, cluster, and scatter evaluation.
+  </Card>
+  <Card title="Config API reference" icon="book" href="/api/config">
+    Full field listing for the base Config class.
+  </Card>
+</CardGroup>

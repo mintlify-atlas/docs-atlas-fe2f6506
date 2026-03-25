@@ -1,0 +1,186 @@
+---
+title: "Cluster game (0_0_cluster)"
+description: "A 7×7 tumbling cluster game. Freegame grid position multipliers start deactivated, activate at 1× on the first win, and double with each subsequent win at that position (up to 512×)."
+---
+
+`0_0_cluster` demonstrates the cluster win type with a tumbling (cascading) mechanic and a freegame that adds per-position grid multipliers on top of a global multiplier.
+
+## Game overview
+
+| Property | Value |
+|---|---|
+| Reels | 7 |
+| Rows | 7 (all reels) |
+| Win type | Cluster |
+| Min cluster size | 5 symbols |
+| Win cap | 5000× |
+| Target RTP | 97% |
+| Max grid multiplier | 512× |
+| Symbols | H1–H4, L1–L4, Wild (W), Scatter (S) |
+
+## How to run
+
+```bash
+make run GAME=0_0_cluster
+```
+
+Or directly:
+
+```bash
+python3 games/0_0_cluster/run.py
+```
+
+## Mechanics
+
+### Basegame
+
+- Clusters of 5 or more adjacent like symbols pay.
+- Winning symbols are removed from the board; symbols above fall down to fill the gaps (tumble/cascade).
+- Tumbling continues until no winning clusters remain or the win cap is hit.
+- Minimum 4 Scatters trigger the freegame. Freespin awards: 4S → 10, 5S → 12, 6S → 15, 7S → 18, 8S → 20.
+
+### Freegame
+
+- Same cluster and tumble rules as basegame.
+- Each grid position starts in a **deactivated** state (value 0).
+- When a position is part of a winning cluster, it becomes **activated** at 1×.
+- On each subsequent win at an already-activated position, the multiplier increments by +1 (i.e., it accumulates linearly, not doubles — capped at 512×).
+- A **global multiplier** starts at 1 and increments by +1 at the start of each freespin. It does not reset between spins.
+- Retrigger: minimum 3 Scatters during freegame award extra spins (3S → 5, 4S → 8, 5S → 10, etc.).
+
+<Warning>
+  The cluster game includes a `check_freespin_entry()` guard in `run_spin()`. Without it, Scatter symbols that tumble onto the board during basegame evaluation (in forced-freegame simulation criteria) would incorrectly trigger a second freegame entry from within the same basegame phase.
+</Warning>
+
+## Paytable
+
+Pays are defined by cluster-size ranges using `convert_range_table()`. The ranges are `(5,5)`, `(6,8)`, `(9,12)`, `(13,36)`:
+
+```python
+t1, t2, t3, t4 = (5, 5), (6, 8), (9, 12), (13, 36)
+pay_group = {
+    (t1, "H1"): 5.0,  (t2, "H1"): 12.5, (t3, "H1"): 25.0, (t4, "H1"): 60.0,
+    (t1, "H2"): 2.0,  (t2, "H2"): 5.0,  (t3, "H2"): 10.0, (t4, "H2"): 40.0,
+    (t1, "H3"): 1.3,  (t2, "H3"): 3.2,  (t3, "H3"): 7.0,  (t4, "H3"): 30.0,
+    (t1, "H4"): 1.0,  (t2, "H4"): 2.5,  (t3, "H4"): 6.0,  (t4, "H4"): 20.0,
+    (t1, "L1"): 0.6,  (t2, "L1"): 1.5,  (t3, "L1"): 4.0,  (t4, "L1"): 10.0,
+    (t1, "L2"): 0.4,  (t2, "L2"): 1.2,  (t3, "L2"): 3.5,  (t4, "L2"): 8.0,
+    (t1, "L3"): 0.2,  (t2, "L3"): 0.8,  (t3, "L3"): 2.5,  (t4, "L3"): 5.0,
+    (t1, "L4"): 0.1,  (t2, "L4"): 0.5,  (t3, "L4"): 1.5,  (t4, "L4"): 4.0,
+}
+self.paytable = self.convert_range_table(pay_group)
+```
+
+`convert_range_table()` expands each range entry into individual `(cluster_size, symbol)` keys in `self.paytable`.
+
+## Grid multiplier implementation
+
+The freegame grid is managed by `update_grid_mults()` in `game_executables.py`:
+
+```python
+def update_grid_mults(self):
+    """All positions start with 1x. If there is a win in that position, the grid point
+    is 'activated' and all subsequent wins on that position will double the grid value."""
+    if self.win_data["totalWin"] > 0:
+        for win in self.win_data["wins"]:
+            for pos in win["positions"]:
+                if self.position_multipliers[pos["reel"]][pos["row"]] == 0:
+                    self.position_multipliers[pos["reel"]][pos["row"]] = 1
+                else:
+                    self.position_multipliers[pos["reel"]][pos["row"]] += 1
+                    self.position_multipliers[pos["reel"]][pos["row"]] = min(
+                        self.position_multipliers[pos["reel"]][pos["row"]],
+                        self.config.maximum_board_mult
+                    )
+        update_grid_mult_event(self)
+```
+
+The cluster win evaluation itself also reads the grid to compute per-cluster payouts in `game_calculations.py`:
+
+```python
+def evaluate_clusters_with_grid(
+    self, config, board, clusters, pos_mult_grid,
+    global_multiplier=1, return_data={"totalWin": 0, "wins": []}
+):
+    for sym in clusters:
+        for cluster in clusters[sym]:
+            syms_in_cluster = len(cluster)
+            if (syms_in_cluster, sym) in config.paytable:
+                board_mult = sum(
+                    pos_mult_grid[p[0]][p[1]] for p in cluster
+                )
+                board_mult = max(board_mult, 1)
+                sym_win = config.paytable[(syms_in_cluster, sym)]
+                symwin_mult = sym_win * board_mult * global_multiplier
+                # ... record win and mark symbols for removal
+```
+
+The `board_mult` for a cluster is the **sum** of the grid multiplier values at all positions in that cluster.
+
+## Game flow (`gamestate.py`)
+
+```python
+def run_spin(self, sim, simulation_seed=None):
+    self.reset_seed(sim)
+    self.repeat = True
+    while self.repeat:
+        self.reset_book()
+        self.draw_board()
+
+        self.get_clusters_update_wins()
+        self.emit_tumble_win_events()
+
+        while self.win_data["totalWin"] > 0 and not (self.wincap_triggered):
+            self.tumble_game_board()
+            self.get_clusters_update_wins()
+            self.emit_tumble_win_events()
+
+        self.set_end_tumble_event()
+        self.win_manager.update_gametype_wins(self.gametype)
+
+        if self.check_fs_condition() and self.check_freespin_entry():
+            self.run_freespin_from_base()
+
+        self.evaluate_finalwin()
+        self.check_repeat()
+
+    self.imprint_wins()
+
+def run_freespin(self):
+    self.reset_fs_spin()
+    while self.fs < self.tot_fs:
+        self.update_freespin()
+        self.draw_board()
+        update_grid_mult_event(self)   # Emit current grid state before each spin
+
+        self.get_clusters_update_wins()
+        self.emit_tumble_win_events()
+        self.update_grid_mults()       # Activate/increment positions after first tumble
+
+        while self.win_data["totalWin"] > 0 and not (self.wincap_triggered):
+            self.tumble_game_board()
+            self.get_clusters_update_wins()
+            self.emit_tumble_win_events()
+            self.update_grid_mults()   # Update grid after each subsequent tumble
+
+        self.set_end_tumble_event()
+        self.win_manager.update_gametype_wins(self.gametype)
+
+        if self.check_fs_condition():
+            self.update_fs_retrigger_amt()
+
+    self.end_freespin()
+```
+
+## Game-specific events
+
+| Event type | When emitted | Contents |
+|---|---|---|
+| `updateGrid` | Start of each freespin, and after each `update_grid_mults()` call | `gridMultipliers` — the full 2D array of current position multiplier values |
+| `winInfo` | After each cluster evaluation | Winning clusters with positions, sizes, and per-cluster multiplier metadata |
+| `setWin` | After all tumbles complete | Spin-level total win |
+| `setTotalWin` | After `setWin` | Cumulative round win |
+
+<Tip>
+  The `gridMultipliers` payload in each `updateGrid` event is the full 7×7 grid. The frontend uses this to animate which positions are active and at what multiplier value before each spin reveal.
+</Tip>

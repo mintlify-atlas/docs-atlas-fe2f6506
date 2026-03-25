@@ -1,0 +1,169 @@
+---
+title: "Wallet Manager"
+description: "Track and accumulate wins at every level — per-reveal, per-spin, per-gametype, and across full simulations."
+---
+
+The `WinManager` class is the single source of truth for all win amounts during a simulation run. It separates wins across four distinct tracking levels and provides methods to update each level at the appropriate point in game logic.
+
+Access the manager via `self.win_manager` on any `GameState` instance.
+
+## Initialization
+
+```python
+class WinManager:
+    def __init__(
+        self,
+        base_game_mode: str,
+        free_game_mode: str,
+        mode_max_win: float,
+    )
+```
+
+<ParamField path="base_game_mode" type="str" required>
+  String identifier for the base game type (e.g. `"basegame"`). Must match `gametype` values used in `update_gametype_wins()`.
+</ParamField>
+
+<ParamField path="free_game_mode" type="str" required>
+  String identifier for the free game type (e.g. `"freegame"`).
+</ParamField>
+
+<ParamField path="mode_max_win" type="float" required>
+  Win cap value. Applied when accumulating end-of-round totals in `update_end_round_wins()`.
+</ParamField>
+
+## Win tracking levels
+
+The four levels map to different scopes within a simulation run:
+
+### 1. `spin_win` — current reveal
+
+Win amount for the current reveal event. Reset for each new spin within a freegame.
+
+<ResponseField name="spin_win" type="float">
+  Current reveal win. Updated by `update_spinwin()`.
+</ResponseField>
+
+```python
+WinManager.update_spinwin(win_amount: float) -> None
+```
+
+Adds `win_amount` to both `spin_win` and `running_bet_win`.
+
+```python
+WinManager.set_spin_win(win_amount: float) -> None
+```
+
+Sets `spin_win` to an exact value rather than incrementing. Adjusts `running_bet_win` by the difference. Useful for end-of-sequence win modifications such as applying a win cap.
+
+```python
+WinManager.reset_spin_win() -> None
+```
+
+Resets `spin_win` to `0.0`. Called at the start of each reveal.
+
+### 2. `running_bet_win` — cumulative for one simulation
+
+Cumulative win across all reveals and gametypes within a single simulation run. Automatically updated whenever `update_spinwin()` or `set_spin_win()` is called — no explicit call needed.
+
+<ResponseField name="running_bet_win" type="float">
+  Running total for the current simulation. The final value must equal the simulation's `payout_multiplier`.
+</ResponseField>
+
+### 3. `basegame_wins` / `freegame_wins` — per-gametype
+
+Per-gametype win totals for the current simulation. Reset at the start of each new `run_spin()` call.
+
+<ResponseField name="basegame_wins" type="float">
+  Accumulated wins attributed to the base game for this simulation.
+</ResponseField>
+
+<ResponseField name="freegame_wins" type="float">
+  Accumulated wins attributed to the free game for this simulation.
+</ResponseField>
+
+```python
+WinManager.update_gametype_wins(gametype: str) -> None
+```
+
+Adds `spin_win` to either `basegame_wins` or `freegame_wins` depending on `gametype`. Raises `RuntimeError` if `gametype` does not match either configured mode.
+
+```python
+# Call after all base game actions complete:
+self.win_manager.update_gametype_wins(self.gametype)
+
+# Call at the end of each free game spin:
+self.win_manager.update_gametype_wins(self.gametype)
+```
+
+<Warning>
+As part of final payout verification, `self.final_win` must equal `basegame_wins + freegame_wins`. A mismatch raises a `RuntimeError`. Always call `update_gametype_wins()` at the correct point in game logic.
+</Warning>
+
+### 4. Cumulative simulation wins
+
+Total wins across all simulation runs for this bet mode. Updated automatically by `imprint_wins()` after each accepted simulation.
+
+<ResponseField name="total_cumulative_wins" type="float">
+  Sum of capped wins from all simulations (base + free).
+</ResponseField>
+
+<ResponseField name="cumulative_base_wins" type="float">
+  Cumulative base game wins across all simulations.
+</ResponseField>
+
+<ResponseField name="cumulative_free_wins" type="float">
+  Cumulative free game wins across all simulations.
+</ResponseField>
+
+```python
+WinManager.update_end_round_wins() -> None
+```
+
+Adds capped `basegame_wins` and `freegame_wins` to cumulative totals. Win cap (`max_allowed_win`) is applied per gametype. Called automatically inside `imprint_wins()` — do not call directly.
+
+```python
+WinManager.reset_end_round_wins() -> None
+```
+
+Resets `basegame_wins`, `freegame_wins`, `running_bet_win`, `spin_win`, and `tumble_win` to `0.0`. Called at the start of each simulation.
+
+## Additional properties
+
+<ResponseField name="tumble_win" type="float">
+  Tracks cumulative wins across a sequence of tumble/cascade events within a single reveal. Useful for win-banner updates or applying end-of-sequence multipliers.
+</ResponseField>
+
+## Typical usage pattern
+
+A complete base game spin using line wins:
+
+```python
+def run_spin(self):
+    # Draw board and evaluate wins
+    self.draw_board()
+    self.win_data = Lines.get_lines(self.board, self.config)
+
+    # Update wallet at reveal level
+    self.win_manager.update_spinwin(self.win_data["totalWin"])
+    Lines.emit_linewin_events(self)
+
+    # Update wallet at gametype level
+    self.win_manager.update_gametype_wins(self.gametype)
+```
+
+For a tumbling game, `update_spinwin()` is called once per tumble step, accumulating across the cascade:
+
+```python
+def run_spin(self):
+    self.draw_board()
+    self.win_data = Cluster.get_cluster_data(self.config, self.board, self.global_mult)
+    self.win_manager.update_spinwin(self.win_data["totalWin"])
+
+    while self.win_data["totalWin"] > 0 and not self.wincap_triggered:
+        self.tumble_board()
+        self.win_data = Cluster.get_cluster_data(self.config, self.board, self.global_mult)
+        self.win_manager.update_spinwin(self.win_data["totalWin"])
+        self.emit_tumble_win_events()
+
+    self.win_manager.update_gametype_wins(self.gametype)
+```

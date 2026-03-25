@@ -1,0 +1,185 @@
+---
+title: "Symbols"
+description: "The Symbol class represents a single position on the game board, carrying its name, special attributes, and per-instance state."
+---
+
+Every position on `self.board` holds a `Symbol` instance. Symbols are lightweight objects created from a shared `SymbolDefinition` (via `SymbolStorage`), so definition data is not duplicated across the board.
+
+## Class hierarchy
+
+```
+SymbolStorage          -- created once at GameState init; holds SymbolDefinitions
+  └── SymbolDefinition -- shared immutable data for each unique symbol name
+        └── Symbol     -- per-board-position instance; holds mutable state
+```
+
+## `Symbol`
+
+```python
+class Symbol:
+    __slots__ = (
+        "defn",        # SymbolDefinition reference
+        "explode",     # bool — marked True when symbol should be removed by tumble
+        "locked",      # bool — symbol is locked in place
+        "scatter",     # bool — is a scatter symbol
+        "wild",        # bool — is a wild symbol
+        "has_multiplier",
+        "multiplier",  # int | None — multiplier value if assigned
+        "has_prize",
+        "prize",       # float | None — prize value if assigned
+    )
+```
+
+### Properties
+
+<ResponseField name="name" type="str">
+  Shorthand symbol name (e.g. `"H1"`, `"W"`, `"S"`). Read from the `SymbolDefinition`.
+</ResponseField>
+
+<ResponseField name="is_special" type="bool">
+  `True` if the symbol name appears in any `config.special_symbols` group.
+</ResponseField>
+
+<ResponseField name="special_flags" type="set[str]">
+  Set of all special attribute names assigned to this symbol (e.g. `{"wild"}`, `{"scatter", "multiplier"}`).
+</ResponseField>
+
+<ResponseField name="explode" type="bool">
+  Set to `True` by win evaluation functions (cluster, scatter) to mark this position for removal during a tumble.
+</ResponseField>
+
+<ResponseField name="multiplier" type="int | None">
+  Multiplier value. `None` unless the symbol has the `"multiplier"` special flag or `assign_attribute()` is called.
+</ResponseField>
+
+### Methods
+
+#### `symbol.check_attribute(*attrs)`
+
+```python
+Symbol.check_attribute(*attrs) -> bool
+```
+
+Returns `True` if any of the given attribute names exist on the symbol with a value that is not `None` or `False`.
+
+```python
+# Check a single attribute
+if symbol.check_attribute("wild"):
+    ...
+
+# Check either prize or multiplier
+if symbol.check_attribute("prize", "multiplier"):
+    ...
+```
+
+#### `symbol.get_attribute(attr)`
+
+```python
+Symbol.get_attribute(attr: str) -> Any
+```
+
+Returns the value of the named attribute via `getattr`. The attribute must exist on the symbol instance.
+
+```python
+mult_value = symbol.get_attribute("multiplier")  # e.g. 3
+```
+
+#### `symbol.assign_attribute(attribute_dict)`
+
+```python
+Symbol.assign_attribute(attribute_dict: dict) -> None
+```
+
+Sets one or more attributes on the symbol instance at runtime.
+
+```python
+# Assign a multiplier value to a wild symbol
+symbol.assign_attribute({"multiplier": 5})
+```
+
+## `SymbolDefinition`
+
+The shared definition object for a symbol name. Created once per unique name at `SymbolStorage` init time.
+
+<ResponseField name="name" type="str">
+  Symbol name string.
+</ResponseField>
+
+<ResponseField name="special_flags" type="set[str]">
+  All special attribute keys this symbol belongs to, derived from `config.special_symbols`.
+</ResponseField>
+
+<ResponseField name="special" type="bool">
+  `True` if `special_flags` is non-empty.
+</ResponseField>
+
+<ResponseField name="is_paying" type="bool">
+  `True` if the symbol name appears as a value in `config.paytable`.
+</ResponseField>
+
+<ResponseField name="paytable" type="list | None">
+  List of `{str(kind): payout}` dicts for this symbol. `None` if not paying.
+</ResponseField>
+
+## `SymbolStorage`
+
+```python
+class SymbolStorage:
+    def __init__(self, config: object, all_symbols: list)
+```
+
+Created once during `GameState` initialization. Holds one `SymbolDefinition` per unique symbol name. Provides the `create_symbol()` factory method used by `Board`.
+
+```python
+SymbolStorage.create_symbol(name: str) -> Symbol
+```
+
+Instantiates a fresh `Symbol` from the stored `SymbolDefinition`. Raises `ValueError` if `name` is not registered:
+
+```
+ValueError: Symbol 'XX' is not registered
+```
+
+## Special symbols configuration
+
+`config.special_symbols` maps attribute names to lists of symbol names:
+
+```python
+config.special_symbols = {
+    "wild":       ["W"],
+    "scatter":    ["S"],
+    "multiplier": ["W", "MW"],  # multiple symbols can share an attribute
+}
+```
+
+A symbol can belong to multiple attribute groups. When a `Symbol` is initialized, all matching flags are set via `assign_default_attribute()`:
+
+| Flag | Default value set |
+|---|---|
+| `"scatter"` | `self.scatter = True` |
+| `"wild"` | `self.wild = True` |
+| `"multiplier"` | `self.has_multiplier = True`, `self.multiplier = 1` |
+| `"prize"` | `self.has_prize = True`, `self.prize = 0` |
+
+## Special symbol functions
+
+To assign dynamic attribute values at symbol creation time, override `assign_special_sym_function()` in the `GameStateOverride` class:
+
+```python
+def assign_special_sym_function(self):
+    self.special_symbol_functions = {
+        "W": [self.assign_mult_property],
+    }
+
+def assign_mult_property(self, symbol):
+    multiplier_value = get_random_outcome(
+        self.get_current_distribution_conditions()["mult_values"][self.gametype]
+    )
+    symbol.assign_attribute({"multiplier": multiplier_value})
+```
+
+Any callable listed in `special_symbol_functions[name]` is called with the new `Symbol` instance immediately after creation in `Board.create_symbol()`.
+
+<Note>
+Symbol `__slots__` is a fixed list. You cannot add attributes not defined in `__slots__` at runtime. If your game requires a new attribute (e.g. `prize`), it must already be declared in the `Symbol` class.
+</Note>

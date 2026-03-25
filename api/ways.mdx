@@ -1,0 +1,180 @@
+---
+title: "Ways Wins"
+description: "Evaluate all-ways winning combinations by counting matching symbols across adjacent reels."
+---
+
+The `Ways` class evaluates wins for games where any matching symbol combination across consecutive reels pays — without requiring specific payline definitions. The total number of winning combinations is the product of matching symbol counts per reel.
+
+## How ways wins work
+
+For each unique symbol on the board, the engine counts how many positions on each consecutive reel contain that symbol (or a wild). The number of **ways** is the product of those per-reel counts:
+
+```
+ways = count_reel_0 × count_reel_1 × count_reel_2 × ...
+```
+
+The payout is: `paytable[(kind, symbol)] × ways`.
+
+For a 5-reel, 3-row board the theoretical maximum is 3⁵ = 243 ways for any given symbol.
+
+<Note>
+The ways calculation does not account for wild symbols appearing on reel 0. Wilds only substitute on reels 1 and beyond.
+</Note>
+
+## Configuration
+
+<ParamField path="config.paytable" type="dict" required>
+  Maps `(kind, symbol)` tuples to base payout multipliers. `kind` is the number of consecutive reels the symbol appears on.
+
+  ```python
+  config.paytable = {
+      (3, "H1"): 1.0,
+      (4, "H1"): 5.0,
+      (5, "H1"): 20.0,
+  }
+  ```
+</ParamField>
+
+## `Ways.get_ways_data()`
+
+```python
+Ways.get_ways_data(
+    config: Config,
+    board: list[list[Symbol]],
+    wild_key: str = "wild",
+    global_multiplier: int = 1,
+    multiplier_key: str = "multiplier",
+    multiplier_strategy: str = "symbol",
+) -> dict
+```
+
+<ParamField path="config" type="Config" required>
+  Game configuration with `config.paytable` and `config.special_symbols` populated.
+</ParamField>
+
+<ParamField path="board" type="list[list[Symbol]]" required>
+  The active game board indexed as `board[reel][row]`.
+</ParamField>
+
+<ParamField path="wild_key" type="str" default="wild">
+  Symbol attribute key identifying wild symbols.
+</ParamField>
+
+<ParamField path="global_multiplier" type="int" default="1">
+  Scalar multiplier applied to all wins when `multiplier_strategy` is `"global"` or `"board"`.
+</ParamField>
+
+<ParamField path="multiplier_key" type="str" default="multiplier">
+  Symbol attribute key for reading per-symbol multiplier values.
+</ParamField>
+
+<ParamField path="multiplier_strategy" type="str" default="symbol">
+  One of `"symbol"`, `"board"`, or `"global"`. See [Multiplier strategies](#multiplier-strategies).
+</ParamField>
+
+### Return value
+
+```python
+win_data = {
+    "totalWin": float,
+    "wins": [
+        {
+            "symbol": str,
+            "kind": int,
+            "win": float,
+            "positions": [{"reel": int, "row": int}, ...],
+            "meta": {
+                "ways": int,
+                "globalMult": int,
+                "winWithoutMult": float,
+                "symbolMult": int,
+            },
+        }
+    ],
+}
+```
+
+<ResponseField name="totalWin" type="float">
+  Sum of all ways wins for this board state.
+</ResponseField>
+
+<ResponseField name="wins" type="list">
+  One entry per winning symbol type.
+
+  <Expandable title="win entry fields">
+    <ResponseField name="symbol" type="str">
+      Name of the winning symbol.
+    </ResponseField>
+    <ResponseField name="kind" type="int">
+      Number of consecutive reels the symbol appears on.
+    </ResponseField>
+    <ResponseField name="win" type="float">
+      Final payout after multipliers applied.
+    </ResponseField>
+    <ResponseField name="positions" type="list">
+      All winning symbol positions, each as `{"reel": int, "row": int}`. Includes both matching symbols and wilds.
+    </ResponseField>
+    <ResponseField name="meta" type="object">
+      <Expandable title="meta fields">
+        <ResponseField name="ways" type="int">
+          Total number of winning ways for this symbol. Ranges from `1` to `num_rows ^ num_reels`.
+        </ResponseField>
+        <ResponseField name="globalMult" type="int">
+          The multiplier applied at the win level.
+        </ResponseField>
+        <ResponseField name="winWithoutMult" type="float">
+          `paytable[(kind, symbol)] × ways` before the global multiplier.
+        </ResponseField>
+        <ResponseField name="symbolMult" type="int">
+          Cumulative symbol-level multiplier accumulated from wild positions.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Wild handling
+
+Wild symbols contribute to ways counts on reels 1 and beyond. When using the `"symbol"` multiplier strategy, a wild with a `multiplier` attribute adds its multiplier value to the reel's symbol count rather than `1` — so a 3× wild on reel 2 contributes 3 to the ways product:
+
+```
+# Board with a 3x wild on reel 2:
+ways = count_reel_0 × count_reel_1 × (count_reel_2_symbols + 3) × ...
+```
+
+This causes ways payouts to scale substantially faster than in lines games.
+
+## Multiplier strategies
+
+| Strategy | Behavior |
+|---|---|
+| `"symbol"` | Wild symbols with a `multiplier` attribute multiply the ways count for that reel. |
+| `"board"` | Multiplier attribute values from all winning positions are accumulated and applied as a global scalar. |
+| `"global"` | All wins are scaled uniformly by `global_multiplier`. |
+
+## Additional methods
+
+### `Ways.emit_wayswin_events(gamestate)`
+
+Emits `win_info`, `set_win`, and `set_total` events if `win_manager.spin_win > 0`.
+
+### `Ways.record_ways_wins(gamestate)`
+
+Writes force-file entries keyed by `kind`, `symbol`, `ways`, and `gametype`.
+
+## Usage
+
+```python
+# Inside GameState.run_spin()
+self.win_data = Ways.get_ways_data(
+    self.config,
+    self.board,
+    multiplier_strategy="symbol",
+)
+self.win_manager.update_spinwin(self.win_data["totalWin"])
+Ways.emit_wayswin_events(self)
+```
+
+<Tip>
+Use ways wins when you want to maximize combinations without defining explicit paylines. A 5-reel, 4-row board supports up to 4⁵ = 1,024 ways per symbol, offering far more winning opportunities than a typical 25-line game.
+</Tip>

@@ -1,0 +1,362 @@
+---
+title: "Config"
+description: "Base configuration class for all game parameters."
+---
+
+The configuration layer defines everything the simulation engine needs to know about a game before any spin runs: board dimensions, paytable, reel strips, special symbols, win caps, and bet modes. Two classes make up this layer — `Config` (the SDK base class) and `GameConfig` (your game-specific subclass).
+
+## Config
+
+`Config` lives in `src/config/config.py` and is never instantiated directly. It sets safe default values for every field the engine requires, constructs output paths, and provides utility methods for reading reel CSVs and verifying paytable ranges.
+
+**What `Config` provides:**
+
+- Win level thresholds for `standard` and `endFeature` keys, consumed by `setWin` and `freeSpinEnd` events.
+- `construct_paths()` — builds `reels_path`, `library_path`, and `publish_path` from `game_id`.
+- `read_reels_csv(file_path)` — reads a comma-separated reel strip file and returns a list of reel columns.
+- `validate_reel_symbols(reel_strip)` — raises `RuntimeError` if any reel symbol is not registered in `all_valid_sym_names`.
+- `convert_range_table(pay_group)` — expands a range-keyed paytable (`{((min, max), symbol): value}`) into the flat `{(kind, symbol): value}` format required by `self.paytable`.
+
+## GameConfig
+
+`GameConfig` inherits `Config` and is the file you create for each game. All required fields must be assigned in `__init__` after calling `super().__init__()`.
+
+```python game_config.py
+from src.config.config import Config
+from src.config.betmode import BetMode
+from src.config.distributions import Distribution
+
+
+class GameConfig(Config):
+    def __init__(self):
+        super().__init__()
+
+        self.game_id = "1_0_my_game"
+        self.provider_number = 42
+        self.working_name = "MyGame"
+        self.wincap = 5000
+        self.win_type = "lines"
+        self.rtp = 0.97
+
+        self.num_reels = 5
+        self.num_rows = [3, 3, 3, 3, 3]
+
+        self.paytable = {
+            (5, "H1"): 50.0,
+            (4, "H1"): 25.0,
+            (3, "H1"): 10.0,
+            (5, "L1"): 5.0,
+            (4, "L1"): 2.0,
+            (3, "L1"): 0.5,
+        }
+
+        self.special_symbols = {
+            "wild":    ["W"],
+            "scatter": ["S"],
+        }
+
+        self.freespin_triggers = {
+            self.basegame_type: {3: 10, 4: 15, 5: 20},
+            self.freegame_type: {3:  5, 4:  8, 5: 10},
+        }
+
+        reels = {"BR0": "BR0.csv", "FR0": "FR0.csv"}
+        self.reels = {}
+        for key, filename in reels.items():
+            self.reels[key] = self.read_reels_csv(f"{self.reels_path}/{filename}")
+
+        self.bet_modes = [
+            BetMode(
+                name="base",
+                cost=1.0,
+                rtp=self.rtp,
+                max_win=self.wincap,
+                auto_close_disabled=False,
+                is_feature=True,
+                is_buybonus=False,
+                distributions=[
+                    Distribution(
+                        criteria="basegame",
+                        quota=0.9,
+                        conditions={
+                            "reel_weights": {self.basegame_type: {"BR0": 1}},
+                        },
+                    ),
+                    Distribution(
+                        criteria="freegame",
+                        quota=0.1,
+                        conditions={
+                            "reel_weights": {
+                                self.basegame_type: {"BR0": 1},
+                                self.freegame_type: {"FR0": 1},
+                            },
+                            "force_freegame": True,
+                            "scatter_triggers": {3: 1},
+                        },
+                    ),
+                ],
+            )
+        ]
+```
+
+## GameConfig fields
+
+### Required fields
+
+<ParamField path="game_id" type="string" required>
+  Unique identifier for the game. Used to construct all output file paths. Must match the directory name under `games/`.
+
+  ```python
+  self.game_id = "1_0_my_game"
+  ```
+</ParamField>
+
+<ParamField path="provider_number" type="int" required>
+  Numeric provider identifier. Written into the backend config file consumed by the RGS.
+</ParamField>
+
+<ParamField path="working_name" type="string" required>
+  Human-readable game title. Written into the backend config as `workingName`.
+</ParamField>
+
+<ParamField path="wincap" type="float" required>
+  Maximum win cap expressed as a bet multiplier (e.g. `5000` means 5000×). All win events and final payouts are clamped to this value.
+</ParamField>
+
+<ParamField path="win_type" type="string" required>
+  Win evaluation method. Accepted values: `"lines"`, `"ways"`, `"cluster"`, `"scatter"`. Determines which calculation module is appropriate for this game.
+</ParamField>
+
+<ParamField path="rtp" type="float" required>
+  Target return-to-player as a decimal (e.g. `0.97` for 97%). Must be less than `1.0`.
+</ParamField>
+
+<ParamField path="num_reels" type="int" required>
+  Total number of reels on the board.
+</ParamField>
+
+<ParamField path="num_rows" type="list[int]" required>
+  Number of visible rows on each reel. Must have exactly `num_reels` entries.
+
+  ```python
+  self.num_rows = [3, 3, 3, 3, 3]  # 5 reels, 3 rows each
+  self.num_rows = [3, 4, 5, 4, 3]  # varying rows per reel
+  ```
+</ParamField>
+
+<ParamField path="paytable" type="dict" required>
+  Maps `(kind, symbol_name)` tuples to payout multipliers.
+
+  - `kind` — number of matching symbols required for this pay.
+  - `symbol_name` — string name exactly as it appears on the reel strip.
+
+  ```python
+  self.paytable = {
+      (5, "H1"): 50.0,
+      (4, "H1"): 25.0,
+      (3, "H1"): 10.0,
+  }
+  ```
+
+  For cluster or cascade games where a range of cluster sizes share the same payout, define `pay_group` and expand it:
+
+  ```python
+  self.pay_group = {
+      ((8, 11), "H1"): 2.0,
+      ((12, 14), "H1"): 5.0,
+      ((15, 15), "H1"): 20.0,
+  }
+  self.paytable = self.convert_range_table(self.pay_group)
+  ```
+</ParamField>
+
+<ParamField path="special_symbols" type="dict" required>
+  Maps attribute names to lists of symbol names that carry that attribute.
+
+  ```python
+  self.special_symbols = {
+      "wild":    ["W"],
+      "scatter": ["S"],
+      "multiplier": ["M2", "M3", "M5"],
+  }
+  ```
+
+  A symbol is valid only if its name appears in `paytable` or `special_symbols`. Any unlisted symbol found on a reel strip raises `RuntimeError` during loading.
+</ParamField>
+
+### Optional fields
+
+<ParamField path="paylines" type="dict">
+  Required for `win_type = "lines"` games. Maps payline identifiers to ordered lists of row indices per reel.
+
+  ```python
+  self.paylines = {
+      0: [1, 1, 1, 1, 1],  # middle row
+      1: [0, 0, 0, 0, 0],  # top row
+      2: [2, 2, 2, 2, 2],  # bottom row
+  }
+  ```
+</ParamField>
+
+<ParamField path="freespin_triggers" type="dict">
+  Defines how many free spins are awarded for each scatter count, separately for base and free game.
+
+  ```python
+  self.freespin_triggers = {
+      self.basegame_type: {3: 10, 4: 15, 5: 20},
+      self.freegame_type: {3:  5, 4:  8, 5: 10},
+  }
+  ```
+</ParamField>
+
+<ParamField path="reels" type="dict">
+  Loaded reel strip data, keyed by reel set identifier. Populate using `read_reels_csv()`.
+
+  ```python
+  self.reels = {}
+  for key, filename in {"BR0": "BR0.csv", "FR0": "FR0.csv"}.items():
+      self.reels[key] = self.read_reels_csv(f"{self.reels_path}/{filename}")
+  ```
+</ParamField>
+
+<ParamField path="bet_modes" type="list[BetMode]">
+  Ordered list of `BetMode` instances. At minimum, include a `"base"` mode. Feature or buy-bonus modes are added as additional entries.
+</ParamField>
+
+## BetMode
+
+`BetMode` lives in `src/config/betmode.py`. Each instance represents one purchasable bet option.
+
+```python
+BetMode(
+    name="base",
+    cost=1.0,
+    rtp=0.97,
+    max_win=5000,
+    auto_close_disabled=False,
+    is_feature=True,
+    is_buybonus=False,
+    distributions=[...],
+)
+```
+
+<ResponseField name="name" type="string">
+  Identifier used to select this mode at runtime (e.g. `"base"`, `"bonus"`).
+</ResponseField>
+
+<ResponseField name="cost" type="float">
+  Bet cost multiplier relative to 1 unit. `1.0` is the standard cost; buy-bonus modes are typically higher (e.g. `100.0`).
+</ResponseField>
+
+<ResponseField name="rtp" type="float">
+  Target RTP for this mode as a decimal. Must be less than `1.0`.
+</ResponseField>
+
+<ResponseField name="max_win" type="float">
+  Per-mode win cap multiplier. Overrides `config.wincap` during simulation of this mode.
+</ResponseField>
+
+<ResponseField name="is_feature" type="bool">
+  When `True`, this mode includes a feature game (e.g. free spins). Exposed in the frontend config.
+</ResponseField>
+
+<ResponseField name="is_buybonus" type="bool">
+  When `True`, this mode is a buy-bonus entry point. Exposed in the frontend config.
+</ResponseField>
+
+<ResponseField name="auto_close_disabled" type="bool">
+  When `False`, the RGS automatically calls `/endround` on 0× payouts. Set to `True` for feature modes where the player must be able to resume an interrupted bet.
+</ResponseField>
+
+<ResponseField name="distributions" type="list[Distribution]">
+  Simulation criteria assigned to this mode. See [Distribution](#distribution) below.
+</ResponseField>
+
+## Distribution
+
+`Distribution` lives in `src/config/distributions.py`. Each instance defines one simulation criteria bucket — a label, a proportion of total simulations, and the reel/feature conditions the engine must satisfy.
+
+```python
+Distribution(
+    criteria="freegame",
+    quota=0.1,
+    win_criteria=None,
+    conditions={
+        "reel_weights": {
+            "basegame": {"BR0": 1},
+            "freegame": {"FR0": 1},
+        },
+        "force_freegame": True,
+        "scatter_triggers": {3: 1},
+    },
+)
+```
+
+<ResponseField name="criteria" type="string">
+  Human-readable label for this bucket (e.g. `"basegame"`, `"freegame"`, `"winCap"`, `"0"`). Written into book output and lookup table files.
+</ResponseField>
+
+<ResponseField name="quota" type="float">
+  Proportion of total simulations allocated to this criteria. All quotas within a `BetMode` must sum to `1.0`.
+</ResponseField>
+
+<ResponseField name="fixed_amt" type="int">
+  Alternative to `quota`. Allocates an exact number of simulations to this criteria. Mutually exclusive with `quota`.
+</ResponseField>
+
+<ResponseField name="win_criteria" type="float | None">
+  If set, the simulation is retried until its final payout multiplier exactly matches this value. Use `0.0` to force zero-win simulations or `self.wincap` to force max-win simulations.
+</ResponseField>
+
+<ResponseField name="conditions" type="dict">
+  Key-value conditions applied to every simulation in this criteria. Always required:
+
+  <Expandable title="conditions keys">
+    <ResponseField name="reel_weights" type="dict" required>
+      Nested dict of `{gametype: {reel_key: weight}}`. Controls which reel strip is drawn from per game type.
+
+      ```python
+      "reel_weights": {
+          "basegame": {"BR0": 2, "BR1": 1},
+          "freegame": {"FR0": 1},
+      }
+      ```
+    </ResponseField>
+    <ResponseField name="force_freegame" type="bool">
+      Default `False`. When `True`, the simulation is retried until a free game is triggered.
+    </ResponseField>
+    <ResponseField name="force_wincap" type="bool">
+      Default `False`. When `True`, the simulation is retried until the win cap is reached.
+    </ResponseField>
+    <ResponseField name="scatter_triggers" type="dict">
+      Required when `force_freegame` is `True`. Weighted draw of scatter counts to force on the initial board, e.g. `{3: 2, 4: 1}` forces 3 scatters twice as often as 4.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Methods
+
+### read_reels_csv()
+
+```python
+reelstrips = self.read_reels_csv(file_path: str) -> list
+```
+
+Reads a CSV reel strip file and returns a list of reel columns. Each column is a list of symbol name strings. The file must have one row of symbols per line, with columns separated by commas.
+
+### convert_range_table()
+
+```python
+paytable = self.convert_range_table(pay_group: dict) -> dict
+```
+
+Expands a range-keyed `pay_group` dict into the flat `(kind, symbol): payout` format required by `self.paytable`. Raises `RuntimeError` if any cluster-size ranges overlap.
+
+### get_distribution_conditions()
+
+Called on a `BetMode` instance to retrieve the `conditions` dict for a named criteria:
+
+```python
+conditions = betmode.get_distribution_conditions("freegame")
+reel_weights = conditions["reel_weights"]
+```

@@ -1,0 +1,154 @@
+---
+title: "Installation"
+description: "System requirements and setup instructions for the Stake Engine Math SDK."
+---
+
+## System requirements
+
+<Warning>
+  Python **3.12 or later** is required. The `stakeengine` package declares `python_requires=">=3.12"` and will not install on earlier versions.
+</Warning>
+
+| Requirement | Version | Notes |
+|---|---|---|
+| Python | >= 3.12 | Must be on your `PATH` as `python3` |
+| pip | any recent | Included with Python 3.12+ |
+| Make | any | Recommended; simplifies setup and running games |
+| Rust / Cargo | stable | Only required for the optimization algorithm |
+
+## Recommended: Makefile setup
+
+If you have Make and Python 3.12+ installed, run:
+
+```bash
+make setup
+```
+
+This executes the following steps in order:
+
+1. `python3 -m venv env` — creates a virtual environment at `env/`.
+2. `pip install --upgrade pip` — ensures pip is up to date inside the environment.
+3. `pip install -r requirements.txt` — installs all dependencies (numpy, zstandard, boto3, pytest, xlsxwriter, matplotlib, and others).
+4. `pip install -e .` — installs the `stakeengine` package in editable mode so local source changes take effect immediately.
+
+After setup, activate the virtual environment before running scripts directly:
+
+<Tabs>
+  <Tab title="macOS / Linux">
+    ```bash
+    source env/bin/activate
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```bash
+    env\Scripts\activate.bat
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  `make run GAME=<game_id>` activates the virtual environment automatically. Manual activation is only needed when you run Python scripts directly.
+</Note>
+
+## Manual installation
+
+If you prefer not to use Make, follow these steps.
+
+<Steps>
+
+<Step title="Create a virtual environment">
+
+```bash
+python3 -m venv env
+```
+
+This creates an isolated Python environment at `env/` in the project root.
+
+</Step>
+
+<Step title="Activate the virtual environment">
+
+<Tabs>
+  <Tab title="macOS / Linux">
+    ```bash
+    source env/bin/activate
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```bash
+    env\Scripts\activate.bat
+    ```
+  </Tab>
+</Tabs>
+
+Your shell prompt will change to show `(env)` when the environment is active.
+
+</Step>
+
+<Step title="Install dependencies">
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+This installs all packages listed in `requirements.txt`, including:
+
+- `numpy` — array operations for reel and board math
+- `zstandard` — compressed `.jsonl.zst` book files
+- `boto3` / `botocore` — optional S3 upload support
+- `pytest` — test runner
+- `xlsxwriter` — PAR sheet generation
+- `matplotlib` — analysis charts
+- `python-dotenv` — environment variable management
+
+</Step>
+
+<Step title="Install the package in editable mode">
+
+```bash
+python3 -m pip install -e .
+```
+
+The `-e` flag installs the `stakeengine` package in editable (development) mode. Changes you make to the source files under `src/` are reflected immediately without reinstalling.
+
+</Step>
+
+</Steps>
+
+## Verify installation
+
+Check that the package is listed:
+
+```bash
+python3 -m pip list | grep stakeengine
+```
+
+Or confirm the import works:
+
+```python
+python3 -c "import stakeengine; print('OK')"
+```
+
+## Installing Rust / Cargo
+
+Rust and Cargo are only required if you plan to run the **optimization algorithm** that adjusts simulation weights to hit a target RTP. If you are only running simulations or inspecting output, you can skip this step.
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Follow the on-screen prompts. After installation, restart your terminal and verify:
+
+```bash
+cargo --version
+```
+
+See the [Rust getting started guide](https://www.rust-lang.org/learn/get-started) for platform-specific instructions.
+
+## Deactivating the virtual environment
+
+When you are done working, deactivate the virtual environment:
+
+```bash
+deactivate
+```

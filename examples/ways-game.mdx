@@ -1,0 +1,169 @@
+---
+title: "Ways game (0_0_ways)"
+description: "A 5-reel, 3-row ways game with 243 win ways. Wild multipliers compound multiplicatively in freegame, and Wilds are excluded from the first reel."
+---
+
+`0_0_ways` is the ways win type reference implementation. The key mechanical difference from the Lines game is that Wild multipliers **multiply together** rather than add, and Wilds cannot appear on reel 1.
+
+## Game overview
+
+| Property | Value |
+|---|---|
+| Reels | 5 |
+| Rows | 3 (all reels) |
+| Win type | Ways |
+| Ways | 243 |
+| Win cap | 5000× |
+| Target RTP | 97% |
+| Symbols | H1–H5 (high), L1–L4 (low), Wild (W), Scatter (S) |
+
+## How to run
+
+```bash
+make run GAME=0_0_ways
+```
+
+Or directly:
+
+```bash
+python3 games/0_0_ways/run.py
+```
+
+## Mechanics
+
+### Basegame
+
+- Ways evaluation — all symbol combinations across adjacent reels left-to-right pay.
+- Scatter (S) appears on all reels, maximum 1 per reel. Minimum 3 Scatters trigger freespins.
+- Freespin awards: 3S → 10 spins, 4S → 15 spins, 5S → 20 spins.
+- Wild (W) does **not** appear on reel 1.
+
+### Freegame
+
+- Wild multipliers range from 1× to 5×, drawn from a weighted distribution.
+- Multipliers **compound multiplicatively** across all Wilds involved in a win. Two 3× Wilds on the same way produce a 9× multiplier.
+- Retrigger: 2+ Scatters award extra spins (2S → 4, 3S → 6, 4S → 8, 5S → 10).
+
+<Note>
+  Wild multipliers in this game are **multiplicative**. This is the opposite of the Lines game where multipliers add. A way with three 2× Wilds produces an 8× multiplier applied to the base way win.
+</Note>
+
+## Configuration
+
+### Paytable (`game_config.py`)
+
+```python
+self.paytable = {
+    (5, "H1"): 10, (4, "H1"): 5,   (3, "H1"): 3,
+    (5, "H2"): 8,  (4, "H2"): 4,   (3, "H2"): 2,
+    (5, "H3"): 5,  (4, "H3"): 2,   (3, "H3"): 1,
+    (5, "H4"): 3,  (4, "H4"): 1,   (3, "H4"): 0.5,
+    (5, "H5"): 2,  (4, "H5"): 0.8, (3, "H5"): 0.4,
+    (5, "L1"): 2,  (4, "L1"): 0.8, (3, "L1"): 0.4,
+    (5, "L2"): 1.5,(4, "L2"): 0.5, (3, "L2"): 0.2,
+    (5, "L3"): 1.5,(4, "L3"): 0.5, (3, "L3"): 0.2,
+    (5, "L4"): 1,  (4, "L4"): 0.3, (3, "L4"): 0.1,
+}
+```
+
+### Special symbols
+
+```python
+self.special_symbols = {"wild": ["W"], "scatter": ["S"], "multiplier": []}
+```
+
+Note that `multiplier` is empty — Wild multipliers are assigned dynamically via `mult_values` in each distribution's `conditions` dict rather than being attached to a dedicated multiplier symbol.
+
+### Reelsets
+
+```python
+reels = {"BR0": "BR0.csv", "FR0": "FR0.csv", "FRWCAP": "FRWCAP.csv"}
+```
+
+- `BR0` — basegame reelset (no Wilds on reel 1).
+- `FR0` — standard freegame reelset.
+- `FRWCAP` — wincap freegame reelset (higher multiplier-value Wild density).
+
+### Wild multiplier distribution (freegame)
+
+Multiplier values are specified per-distribution in the `conditions` dict:
+
+```python
+# Standard freegame distribution
+"mult_values": {1: 200, 2: 100, 3: 80, 4: 50, 5: 20}
+
+# Wincap distribution (higher-value multipliers weighted up)
+"mult_values": {1: 20, 2: 50, 3: 80, 4: 100, 5: 20}
+```
+
+Keys are multiplier values; values are their relative weights.
+
+### Freespin triggers
+
+```python
+self.freespin_triggers = {
+    self.basegame_type: {3: 10, 4: 15, 5: 20},
+    self.freegame_type: {2: 4, 3: 6, 4: 8, 5: 10},
+}
+```
+
+### Bet modes
+
+Two bet modes:
+
+- **`base`** (cost 1×, `is_feature=True`) — scatter-triggered freegame with four distributions: `wincap`, `freegame`, zero-win, and `basegame`.
+- **`bonus`** (cost 100×, `is_buybonus=True`) — direct freegame entry, single `freegame` distribution.
+
+## Game flow (`gamestate.py`)
+
+```python
+def run_spin(self, sim: int, simulation_seed=None) -> None:
+    self.reset_seed(sim)
+    self.repeat = True
+    while self.repeat:
+        self.reset_book()
+        self.draw_board(emit_event=True)
+
+        # Evaluate base-game board
+        self.evaluate_ways_board()
+
+        self.win_manager.update_gametype_wins(self.gametype)
+        # Check Scatter condition and trigger freegame
+        if self.check_fs_condition() and self.check_freespin_entry():
+            self.run_freespin_from_base()
+
+        self.evaluate_finalwin()
+        self.check_repeat()
+
+    self.imprint_wins()
+
+def run_freespin(self) -> None:
+    self.reset_fs_spin()
+    while self.fs < self.tot_fs:
+        self.update_freespin()
+        self.draw_board(emit_event=True)
+
+        self.evaluate_ways_board()
+
+        if self.check_fs_condition():
+            self.update_fs_retrigger_amt()
+
+        self.win_manager.update_gametype_wins(self.gametype)
+    self.end_freespin()
+```
+
+`evaluate_ways_board()` handles Wild substitution, multiplicative multiplier compounding, and event emission. The `check_freespin_entry()` guard prevents false freegame triggers when the simulation criteria require a basegame-only result.
+
+## Comparison with lines game
+
+| Feature | Lines (`0_0_lines`) | Ways (`0_0_ways`) |
+|---|---|---|
+| Win evaluation | 20 fixed paylines | 243 ways (all combinations) |
+| Wild multiplier strategy | Additive (sum all Wilds) | Multiplicative (product of all Wilds) |
+| Wild on reel 1 | Yes | No |
+| Freegame min Wild mult | 2× | 1× |
+| High symbols | H1–H4 | H1–H5 |
+
+<Tip>
+  To see the multiplicative multiplier in action, set `compression = False` and inspect the `meta` field inside `winInfo` events. It includes `globalMult` and per-symbol multiplier values.
+</Tip>

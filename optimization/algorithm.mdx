@@ -1,0 +1,89 @@
+---
+title: "Optimization Algorithm"
+description: "How the Rust-powered win distribution optimizer adjusts simulation selection weights to target a specified RTP and hit-rate profile."
+---
+
+The optimization algorithm adjusts the selection weights of simulations in the lookup table so that, when sampled according to those weights, the overall win distribution converges on a specified RTP and hit-rate profile. All simulations initially carry a weight of `1`; the optimizer modifies these weights without changing the underlying simulation outcomes.
+
+## How it works
+
+The algorithm uses iterative weighted sampling:
+
+1. **Generate trial distributions** — candidate sets of weights are drawn using Gaussian sampling, with optional scaling applied to specific win ranges.
+2. **Evaluate against targets** — each candidate distribution is scored against the configured RTP and hit-rate targets per win-type condition.
+3. **Accept viable distributions** — distributions that fall within the mean-to-median bounds (volatility controls) are retained.
+4. **Rank and select** — retained distributions are ranked by running simulated test spins, and the best-scoring distribution is written out as the final lookup table.
+
+## Rust implementation
+
+The algorithm is implemented in Rust for performance. It compiles to a binary executable. The source lives in `optimization_program/src/main.rs`.
+
+<Note>
+You only need to rebuild the binary the first time you set up the project, or after modifying `optimization_program/src/main.rs`. For routine optimization runs the pre-built binary is used automatically by `OptimizationExecution`.
+</Note>
+
+To build the binary:
+
+```bash
+cargo build --release
+```
+
+Run this from the `optimization_program/` directory, or let the Python wrapper invoke it via `cargo run --release`.
+
+## Lookup tables and weights
+
+Each row in a lookup table CSV has the form:
+
+```
+<simulation_id>, <weight>, <payout_multiplier>
+```
+
+Before optimization every weight is `1`, meaning all simulations are equally likely to be selected. After optimization the weights are rewritten to `lookUpTable_<mode>_0.csv`, reflecting the probability mass the optimizer assigned to each simulation.
+
+## Key inputs
+
+| Input | Description |
+|---|---|
+| Lookup tables (CSV) | Raw simulation results with initial weight `1` |
+| Force records (`force_record_<mode>.json`) | Recorded event data used to compute RTP contributions |
+| Optimization config (`math_config.json`) | Game parameters, conditions, scaling, and run parameters |
+| Setup file (`setup.toml`) | Generated automatically; controls thread counts, trial counts, and mode |
+
+## Key outputs
+
+| Output | Description |
+|---|---|
+| `lookUpTable_<mode>_0.csv` | Modified lookup table with optimized weights |
+| Additional candidates | Stored in `library/optimization_files/` for use with `swap_lookups` |
+
+## Conditions and simulation assignment
+
+The `conditions` dictionary partitions simulations into exclusive groups — one group per win type (for example, `wincap`, `freegame`, `0`, `basegame`). The optimizer reads these entries in order and assigns matching simulation IDs to each condition, removing them from the available pool before moving to the next.
+
+<Warning>
+The order of keys in `conditions` matters. A simulation can belong to multiple win-type categories — for example, a wincap result is also a freegame result. List more specific conditions first (e.g., `wincap` before `freegame`) so that those simulations are claimed by the correct condition before the broader one consumes them. Incorrect ordering will mis-classify simulations and produce wrong RTP splits.
+</Warning>
+
+### Example conditions ordering
+
+```python
+"conditions": {
+    "wincap":   ConstructConditions(rtp=0.01, av_win=5000, search_conditions=5000).return_dict(),
+    "freegame": ConstructConditions(rtp=0.37, hr=200, search_conditions={"symbol": "scatter"}).return_dict(),
+    "0":        ConstructConditions(rtp=0, av_win=0, search_conditions=0).return_dict(),
+    "basegame": ConstructConditions(hr=3.5, rtp=0.59).return_dict(),
+}
+```
+
+`wincap` is listed before `freegame` because every wincap simulation also triggers the freegame; listing it first ensures it is assigned to the wincap bucket rather than the freegame bucket.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Setting up optimization" icon="sliders" href="/optimization/setup">
+    Configure `OptimizationSetup` and run the optimizer from `run.py`.
+  </Card>
+  <Card title="Game analysis" icon="chart-bar" href="/optimization/analysis">
+    Generate a PAR sheet and analyze the optimized win distribution.
+  </Card>
+</CardGroup>

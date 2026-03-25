@@ -1,0 +1,395 @@
+---
+title: "Events"
+description: "Event emission functions for communicating game state to the frontend."
+---
+
+Events are the primary communication channel between the simulation engine and the frontend. Every event is a plain dict appended to `gamestate.book.events`. When the RGS selects a simulation from the library, it returns the full `events` array in the `play/` API response, and the frontend SDK processes each event in order to drive animations and UI updates.
+
+## Event structure
+
+Every event follows this base structure:
+
+```json
+{
+  "index": 0,
+  "type": "<eventType>",
+  "...": "<additional fields per type>"
+}
+```
+
+`index` is the zero-based position of the event in the book's event list. `type` is a string constant defined in `EventConstants`.
+
+## Emitting events
+
+Call event functions after the state change they describe. Pass `gamestate` (i.e. `self` inside `GameState`):
+
+```python
+from src.events.events import reveal_event, win_info_event, set_win_event
+
+# Inside run_spin():
+self.draw_board()                    # state change
+reveal_event(self)                   # emit reveal immediately after
+
+self.win_data = Lines.get_lines(...)  # state change
+win_info_event(self)                 # emit win info
+set_win_event(self)                  # emit cumulative win ticker
+```
+
+All event functions call `gamestate.book.add_event(event)` internally, which performs a deep copy before appending. You do not need to copy the event dict yourself.
+
+## Importing event functions
+
+```python
+from src.events.events import (
+    reveal_event,
+    win_info_event,
+    set_win_event,
+    set_total_event,
+    set_tumble_event,
+    final_win_event,
+    update_freespin_event,
+    freespin_end_event,
+    fs_trigger_event,
+    update_global_mult_event,
+    tumble_board_event,
+    update_tumble_win_event,
+    enter_bonus_event,
+    wincap_event,
+)
+```
+
+Most of these are called automatically by `Executables` methods (e.g. `evaluate_finalwin()` calls `final_win_event()`). You only need to import them directly for custom event sequences.
+
+## Standard event types
+
+### reveal
+
+Emitted once per board draw. Describes the full board state including padding symbols.
+
+```json
+{
+  "index": 0,
+  "type": "reveal",
+  "board": [
+    [{"name": "H1"}, {"name": "L3"}, {"name": "H2"}],
+    [{"name": "W"},  {"name": "H1"}, {"name": "L1"}],
+    [{"name": "L2"}, {"name": "H1"}, {"name": "L4"}],
+    [{"name": "L1"}, {"name": "L2"}, {"name": "H1"}],
+    [{"name": "H2"}, {"name": "L3"}, {"name": "L5"}]
+  ],
+  "paddingPositions": [12, 4, 22, 7, 19],
+  "gameType": "basegame",
+  "anticipation": [0, 0, 1, 0, 0]
+}
+```
+
+- `board` — 2D array indexed `[reel][row]`. Each symbol is `{"name": "..."}` plus any active special attributes (e.g. `{"name": "M", "multiplier": 3}`).
+- `paddingPositions` — the reel-stop index selected for each reel. Used by the frontend to animate the spin.
+- `gameType` — current value of `gamestate.gametype`.
+- `anticipation` — per-reel anticipation flag array. Non-zero values trigger anticipation animations on that reel.
+
+When `config.include_padding = True` (the default), the board array includes one extra row at the top and bottom of each reel column for the padding symbols.
+
+**Emitted by:** `reveal_event(gamestate)` — called automatically by `draw_board(emit_event=True)`.
+
+---
+
+### winInfo
+
+Describes all winning combinations from the current board evaluation.
+
+```json
+{
+  "index": 1,
+  "type": "winInfo",
+  "totalWin": 10,
+  "wins": [
+    {
+      "symbol": "L5",
+      "kind": 3,
+      "win": 10,
+      "positions": [
+        {"reel": 0, "row": 1},
+        {"reel": 1, "row": 1},
+        {"reel": 2, "row": 1}
+      ],
+      "meta": {}
+    }
+  ]
+}
+```
+
+- `totalWin` — sum of all wins in this event, in cents (integer, multiplied by 100).
+- `wins` — array of individual win objects.
+- `symbol` — winning symbol name.
+- `kind` — number of matching symbols.
+- `win` — payout for this win in cents.
+- `positions` — board positions of the winning symbols. Row indices are offset by `+1` when `include_padding = True`.
+- `meta` — optional additional data (e.g. `winWithoutMult` for multiplier games).
+
+This is the real output from simulation 58 of the sample lines game.
+
+**Emitted by:** `win_info_event(gamestate)`.
+
+---
+
+### setWin
+
+Updates the cumulative win ticker for a single outcome.
+
+```json
+{
+  "index": 2,
+  "type": "setWin",
+  "amount": 10,
+  "winLevel": 2
+}
+```
+
+- `amount` — current spin win in cents (clamped to wincap × 100).
+- `winLevel` — integer level (1–10) from `config.get_win_level()`, used by the frontend to select the correct win animation tier.
+
+**Emitted by:** `set_win_event(gamestate, winlevel_key="standard")`.
+
+---
+
+### setTotalWin
+
+Updates the total win display for the entire betting round, accumulating wins across all free spins.
+
+```json
+{
+  "index": 3,
+  "type": "setTotalWin",
+  "amount": 10
+}
+```
+
+- `amount` — cumulative `running_bet_win` in cents (clamped to wincap × 100).
+
+**Emitted by:** `set_total_event(gamestate)`.
+
+---
+
+### finalWin
+
+Emitted once per simulation, after all spin and free spin actions complete. Carries the final payout multiplier.
+
+```json
+{
+  "index": 4,
+  "type": "finalWin",
+  "amount": 10
+}
+```
+
+- `amount` — final payout in cents (clamped to wincap × 100). Matches `book.payoutMultiplier`.
+
+This is also from simulation 58 of the sample lines game — a 0.1× multiplier, stored as integer `10`.
+
+**Emitted by:** `final_win_event(gamestate)` — called automatically by `evaluate_finalwin()`.
+
+---
+
+### updateFreeSpin
+
+Emitted at the start of each free spin before the board draw.
+
+```json
+{
+  "index": 0,
+  "type": "updateFreeSpin",
+  "amount": 1,
+  "total": 10
+}
+```
+
+- `amount` — current free spin number (1-based after the first `fs += 1` call).
+- `total` — total free spins awarded this round (including retriggers).
+
+**Emitted by:** `update_freespin_event(gamestate)` — called automatically by `update_freespin()`.
+
+---
+
+### freeSpinTrigger / freeSpinRetrigger
+
+Emitted when free spins are awarded. Uses `freeSpinTrigger` when triggered from the base game, `freeSpinRetrigger` on a retrigger.
+
+```json
+{
+  "index": 5,
+  "type": "freeSpinTrigger",
+  "totalFs": 10,
+  "positions": [
+    {"reel": 1, "row": 2},
+    {"reel": 2, "row": 1},
+    {"reel": 4, "row": 3}
+  ]
+}
+```
+
+- `totalFs` — total free spins now available.
+- `positions` — board positions of the scatter symbols that triggered free spins.
+
+**Emitted by:** `fs_trigger_event(gamestate, basegame_trigger=True/False, freegame_trigger=True/False)`.
+
+---
+
+### freeSpinEnd
+
+Emitted once when the free spin loop ends.
+
+```json
+{
+  "index": 12,
+  "type": "freeSpinEnd",
+  "amount": 350,
+  "winLevel": 5
+}
+```
+
+- `amount` — total free game winnings in cents.
+- `winLevel` — win level from `get_win_level()` using the `endFeature` scale (levels 1–10 with higher thresholds).
+
+**Emitted by:** `freespin_end_event(gamestate)` — called automatically by `end_freespin()`.
+
+---
+
+### tumbleBoard
+
+Emitted during tumble/cascade games to describe which symbols are removed and what replaces them.
+
+```json
+{
+  "index": 3,
+  "type": "tumbleBoard",
+  "explodingSymbols": [
+    {"reel": 0, "row": 2},
+    {"reel": 1, "row": 1}
+  ],
+  "newSymbols": [
+    [{"name": "L1"}, {"name": "H2"}],
+    [],
+    [],
+    [],
+    []
+  ]
+}
+```
+
+- `explodingSymbols` — positions of symbols removed from the board (offset by +1 if padding is active).
+- `newSymbols` — per-reel arrays of new symbols that fall into the vacated positions.
+
+**Emitted by:** `tumble_board_event(gamestate)` — called automatically by `tumble_game_board()`.
+
+---
+
+### setTumbleWin / updateTumbleWin
+
+Used for running tumble win banners:
+
+- `setTumbleWin` — sets the cumulative tumble win banner to the current spin win total.
+- `updateTumbleWin` — updates the running tumble win for the current cascade step.
+
+```json
+{"index": 4, "type": "setTumbleWin", "amount": 120}
+```
+
+```json
+{"index": 5, "type": "updateTumbleWin", "amount": 80}
+```
+
+**Emitted by:** `set_tumble_event(gamestate)` and `update_tumble_win_event(gamestate)`.
+
+---
+
+### updateGlobalMult
+
+Emitted when the global multiplier increments.
+
+```json
+{
+  "index": 6,
+  "type": "updateGlobalMult",
+  "globalMult": 3
+}
+```
+
+- `globalMult` — current integer multiplier value after incrementing.
+
+**Emitted by:** `update_global_mult_event(gamestate)` — called automatically by `update_global_mult()`.
+
+---
+
+### enterBonus
+
+Emitted to explicitly indicate entry into a feature game (e.g. a buy-bonus mode). Used when the bonus entry reason needs to be communicated to the frontend separately from a scatter trigger.
+
+```json
+{
+  "index": 5,
+  "type": "enterBonus",
+  "reason": "buyBonus"
+}
+```
+
+- `reason` — string describing why the bonus was entered (e.g. `"buyBonus"`, `"scatter"`). Read from `gamestate.bonus_type`.
+
+**Emitted by:** `enter_bonus_event(gamestate)`.
+
+---
+
+### wincap
+
+Emitted when the running win reaches `config.wincap`. Signals the frontend to stop displaying further win events.
+
+```json
+{
+  "index": 7,
+  "type": "wincap",
+  "amount": 500000
+}
+```
+
+- `amount` — the wincap amount in cents.
+
+**Emitted by:** `wincap_event(gamestate)` — called automatically by `evaluate_wincap()`.
+
+## book.add_event()
+
+All event functions call this method internally. You can also call it directly to emit a custom event:
+
+```python
+self.book.add_event({
+    "index": len(self.book.events),
+    "type": "myCustomEvent",
+    "value": 42,
+})
+```
+
+The `Book` class (`src/state/books.py`) stores events as a list and performs a deep copy on each append to prevent mutation of past events.
+
+## Event ordering
+
+Emit events in the order they occur during the spin. The frontend processes events sequentially — out-of-order events will produce incorrect animations.
+
+The standard sequence for a base game spin with wins is:
+
+1. `reveal` — board draw
+2. `winInfo` — winning combinations
+3. `setWin` — cumulative spin win ticker
+4. `setTotalWin` — cumulative round win ticker
+5. `freeSpinTrigger` (if applicable)
+6. *(free spin events...)*
+7. `finalWin` — end of round
+
+## How events reach the frontend
+
+The simulation library stores every book as a JSON object. When a player spins:
+
+1. The RGS selects a simulation ID from the lookup table (weighted by the optimization output).
+2. It retrieves the corresponding book from `library/books/books_<mode>.jsonl`.
+3. It returns the book's `events` array in the `play/` API response.
+4. The frontend SDK consumes the events in order.
+
+No live computation happens at runtime — the entire event sequence is pre-computed during simulation.

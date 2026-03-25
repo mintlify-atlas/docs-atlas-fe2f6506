@@ -1,0 +1,159 @@
+---
+title: "Board"
+description: "Generate and manage the active 2D grid of Symbol objects from reelstrips."
+---
+
+The `Board` class extends `GeneralGameState` and is responsible for creating, populating, and inspecting the game board. The board is stored as `self.board` — a list of columns (reels), where each column is a list of `Symbol` objects.
+
+```
+self.board[reel][row]  ->  Symbol
+```
+
+Board dimensions are `config.num_reels` wide and `config.num_rows[reel_index]` tall.
+
+## Board generation
+
+### `Board.create_board_reelstrips()`
+
+```python
+Board.create_board_reelstrips() -> None
+```
+
+The primary board generation method. For each reel, a random stopping position is drawn with uniform probability over the full reelstrip length. Symbol objects are created from the names at and following that position.
+
+Sets the following gamestate properties:
+
+| Property | Type | Description |
+|---|---|---|
+| `self.board` | `list[list[Symbol]]` | Active game board. |
+| `self.reelstrip_id` | `str` | ID of the selected reelstrip set. |
+| `self.reelstrip` | `list[list[str]]` | The raw reelstrip name arrays. |
+| `self.reel_positions` | `list[int]` | Stopping position index for each reel. |
+| `self.padding_position` | `list[int]` | Reelstrip index of the first symbol below the active board, per reel. |
+| `self.anticipation` | `list[int]` | Delay values for reel reveals when scatter count is near trigger threshold. |
+| `self.top_symbols` | `list[Symbol]` | Symbol directly above the active board (when `config.include_padding` is `True`). |
+| `self.bottom_symbols` | `list[Symbol]` | Symbol directly below the active board (when `config.include_padding` is `True`). |
+
+The reelstrip set is chosen by a weighted random draw:
+
+```python
+self.reelstrip_id = get_random_outcome(
+    self.get_current_distribution_conditions()["reel_weights"][self.gametype]
+)
+```
+
+If the stopping position plus board height exceeds the reelstrip length, positions wrap around to index 0.
+
+### `Board.draw_board(emit_event, trigger_symbol)`
+
+```python
+Board.draw_board(
+    emit_event: bool = True,
+    trigger_symbol: str = "scatter",
+) -> None
+```
+
+High-level board draw that handles forced-freegame logic. When the current bet mode distribution has `force_freegame = True` in the base game, `draw_board()` draws a scatter count from `scatter_triggers` and calls `force_special_board()` to guarantee that count. Otherwise it calls `create_board_reelstrips()` in a loop until the scatter count is below the freegame trigger threshold.
+
+<ParamField path="emit_event" type="bool" default="True">
+  Whether to emit a `reveal` event after the board is drawn.
+</ParamField>
+
+<ParamField path="trigger_symbol" type="str" default="scatter">
+  The special symbol attribute used to determine the trigger count when `force_freegame` is active.
+</ParamField>
+
+## Forced boards
+
+### `Board.force_special_board(force_criteria, num_force_syms)`
+
+```python
+Board.force_special_board(
+    force_criteria: str,
+    num_force_syms: int,
+) -> None
+```
+
+Guarantees exactly `num_force_syms` symbols matching `force_criteria` on the board. Repeatedly calls `_force_special_board()` until the count is satisfied.
+
+<ParamField path="force_criteria" type="str" required>
+  Symbol name or special attribute key (e.g. `"scatter"`) to force onto the board.
+</ParamField>
+
+<ParamField path="num_force_syms" type="int" required>
+  Exact number of that symbol to guarantee.
+</ParamField>
+
+<Warning>
+If the target symbol can appear stacked (multiple per reel) in the reelstrip, this method cannot guarantee an exact count. Ensure scatter symbols are not stacked when using forced boards.
+</Warning>
+
+### `Board.force_board_from_reelstrips(reelstrip_id, force_stop_positions)`
+
+```python
+Board.force_board_from_reelstrips(
+    reelstrip_id: str,
+    force_stop_positions: dict,
+) -> None
+```
+
+Creates a board from explicitly specified reelstrip stopping positions.
+
+<ParamField path="reelstrip_id" type="str" required>
+  The ID of the reelstrip set to use.
+</ParamField>
+
+<ParamField path="force_stop_positions" type="dict" required>
+  Maps reel index to an integer stopping position. Reels not included receive a random stop.
+
+  ```python
+  # Force reels 0 and 2; reel 1 is random
+  force_board_from_reelstrips("base", {0: 42, 2: 17})
+  ```
+</ParamField>
+
+## Padding symbols
+
+When `config.include_padding = True`, one symbol above and one below the visible board area is also tracked per reel. These are stored in `self.top_symbols` and `self.bottom_symbols`. Row indexing for the active board starts at `row = 1`, where `row = 0` is the top padding symbol.
+
+During tumble events, the `top_symbols` entry for each reel is consumed first to fill the first vacant position before drawing new symbols from the reelstrip.
+
+## Special symbols on board
+
+After every board draw or tumble, `special_syms_on_board` is populated with positions of any symbols defined in `config.special_symbols`:
+
+```python
+self.special_syms_on_board = {
+    "scatter": [{"reel": 0, "row": 2}, {"reel": 3, "row": 1}],
+    "wild":    [{"reel": 2, "row": 0}],
+}
+```
+
+Use this to check freegame entry conditions:
+
+```python
+if len(self.special_syms_on_board["scatter"]) >= self.config.freespin_triggers[self.gametype]:
+    self.run_freespin_from_base()
+```
+
+Call `get_special_symbols_on_board()` explicitly after any manual board modification to keep this dictionary current.
+
+## Anticipation
+
+`self.anticipation` is an integer array of length `num_reels`, initialized to `0`. When scatter symbols that would trigger the freegame are detected on early reels, later reels receive incrementing anticipation values:
+
+```python
+# 3 scatters needed; scatters on reels 0 and 1:
+self.anticipation = [0, 0, 1, 2, 3]
+```
+
+## Utility methods
+
+| Method | Description |
+|---|---|
+| `print_board(board)` | Prints a transposed, human-readable symbol grid to the terminal. |
+| `board_string(board)` | Returns a 2D list of symbol name strings. |
+| `count_special_symbols(special_sym_criteria)` | Returns the count of active symbols matching a special attribute. |
+| `count_symbols_on_board(symbol_name)` | Returns the count of symbols matching a specific name (case-insensitive). |
+| `get_symbol_positions(target_symbol)` | Returns a dict of all positions for a given symbol name. |
+| `get_syms_on_reel(reel_id, target_symbol)` | Returns reelstrip stopping positions where the target symbol appears, per reel. |

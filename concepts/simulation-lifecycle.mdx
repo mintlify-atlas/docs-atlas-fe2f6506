@@ -1,0 +1,173 @@
+---
+title: "Simulation Lifecycle"
+description: "How a single simulation runs from RNG seeding through event emission, the repeat loop, and final output to books and lookup tables."
+---
+
+## Overview
+
+Every simulation follows a deterministic lifecycle. The `create_books()` function orchestrates the full batch: it assigns distribution criteria to simulation numbers, then calls `run_spin()` once per simulation. Each simulation writes its events to the books file and its payout multiplier to the lookup table.
+
+<Steps>
+  <Step title="Assign criteria to simulation numbers">
+    Before any simulations run, `create_books()` reads the `BetMode` distributions defined in `GameConfig` and pre-assigns a criteria label (e.g. `basegame`, `freegame`, `winCap`, `0`) to each simulation number according to the configured quotas. This is done once per bet mode.
+  </Step>
+  <Step title="Seed the RNG">
+    `run_spin()` calls `self.reset_seed(sim)`, which sets Python's random seed to `sim + 1`. Because the seed is derived from the simulation number, every simulation is fully reproducible — re-running simulation 58 will always produce identical results.
+  </Step>
+  <Step title="Enter the repeat loop">
+    `self.repeat` is set to `True` at the start of `run_spin()`. The loop continues until the spin satisfies the distribution criteria assigned to this simulation number. Each iteration calls `self.reset_book()`, which resets all local simulation variables and sets `self.repeat = False`. If the final result does not meet the criteria, `self.check_repeat()` sets `self.repeat = True` again and the loop retries.
+  </Step>
+  <Step title="Run the spin">
+    Inside the loop, the three core phases execute: calculate the board state, update the wallet manager, and emit events. If a freespin trigger condition is met, `run_freespin()` is called before the final win is evaluated.
+  </Step>
+  <Step title="Verify distribution criteria">
+    `self.check_repeat()` inspects the final payout against any `win_criteria` defined for this simulation's assigned distribution, and checks whether a freespin was triggered if `force_freegame` is set. If either check fails, `self.repeat` is set back to `True`.
+  </Step>
+  <Step title="Imprint wins">
+    Once `self.repeat` remains `False` after `check_repeat()`, `self.imprint_wins()` saves the simulation result: the events are added to the in-memory library, the payout multiplier is recorded, and cumulative win totals are updated for runtime RTP reporting.
+  </Step>
+</Steps>
+
+---
+
+## RNG seeding
+
+Each simulation is seeded with its own simulation number to ensure reproducibility:
+
+```python
+def reset_seed(self, sim: int = 0, seed_override=None) -> None:
+    """Reset rng seed to simulation number for reproducibility."""
+    if seed_override is not None:
+        random.seed(seed_override + 1)
+    else:
+        random.seed(sim + 1)
+    self.sim = sim
+    self.repeat_count = 0
+```
+
+This means that running the simulator twice with the same `num_sim_args` will produce identical books files. It also makes it straightforward to reproduce any specific result for debugging.
+
+---
+
+## The repeat loop
+
+The repeat mechanism ensures that pre-assigned distribution criteria are honoured. The loop works as follows:
+
+- `run_spin()` sets `self.repeat = True` before the loop begins.
+- `reset_book()` sets `self.repeat = False` at the start of each iteration, resetting all simulation state.
+- At the end of the spin, `check_repeat()` re-evaluates whether the result satisfies the assigned criteria. If not, it sets `self.repeat = True` and the loop retries with a fresh board.
+
+```python
+def check_repeat(self) -> None:
+    """Checks if the spin failed a criteria constraint at any point."""
+    if self.repeat is False:
+        win_criteria = self.get_current_betmode_distributions().get_win_criteria()
+        if win_criteria is not None and self.final_win != win_criteria:
+            self.repeat = True
+
+        if self.get_current_distribution_conditions()["force_freegame"] and not (self.triggered_freegame):
+            self.repeat = True
+
+    self.repeat_count += 1
+    self.check_current_repeat_count()
+```
+
+A high repeat count warning is emitted if a simulation retries more than 1,000 times, which typically indicates an overly restrictive distribution criteria or misconfigured reels.
+
+---
+
+## The `run_spin()` flow
+
+```python
+def run_spin(self, sim):
+    self.reset_seed(sim)   # seed the RNG with the simulation number
+    self.repeat = True
+    while self.repeat:
+        self.reset_book()      # reset local variables; sets self.repeat = False
+        self.draw_board()      # draw board from reel strips
+
+        # 1. evaluate win_data
+        # 2. update win_manager
+        # 3. emit relevant events
+
+        self.win_manager.update_gametype_wins(self.gametype)  # record basegame win contribution
+        if self.check_fs_condition():       # check scatter trigger conditions
+            self.run_freespin_from_base()   # run freegame
+
+        self.evaluate_finalwin()
+        self.check_repeat()   # verify distribution criteria are satisfied
+
+    self.imprint_wins()       # save simulation result to library
+```
+
+The three phases inside the loop are:
+
+1. **Calculate board state** — draw symbols from reel strips, evaluate win combinations, determine any special symbol actions.
+2. **Update wallet manager** — call `win_manager.update_spinwin()` with the current spin win, and `win_manager.update_gametype_wins()` once all basegame actions are complete.
+3. **Emit events** — append JSON event objects to `self.book` for each state change (board reveal, win info, win counter updates, freespin trigger, etc.).
+
+---
+
+## The `run_freespin()` flow
+
+```python
+def run_freespin(self):
+    self.reset_fs_spin()                     # reset freegame variables
+    while self.fs < self.tot_fs:             # loop over each freegame spin
+        self.update_freespin()               # increment spin counter and emit event
+        self.draw_board()                    # draw board using freegame reel strips
+
+        # 1. evaluate win_data
+        # 2. update win_manager
+        # 3. emit relevant events
+
+        if self.check_fs_condition():        # check retrigger conditions
+            self.update_fs_retrigger_amt()
+
+        self.win_manager.update_gametype_wins(self.gametype)  # record freegame win contribution
+
+    self.end_freespin()                      # emit event to indicate end of freegame
+```
+
+The freespin loop follows the same three-phase structure as `run_spin()`. The `tot_fs` counter may be increased by retriggers during the loop. `win_manager.update_gametype_wins()` is called at the end of each individual freespin so that basegame and freegame win contributions are tracked separately.
+
+---
+
+## Simulation output
+
+At the end of a successful simulation (after `self.repeat` remains `False`), two outputs are written:
+
+- **Books** — the complete list of events for this simulation is stored in `self.library[sim + 1]`. When all simulations in a batch are complete, the library is written to `library/books/` or `library/books_compressed/` as a JSONL file.
+- **Lookup table** — the `payoutMultiplier` for this simulation is appended to the lookup table CSV with an initial weight of `1`.
+
+### `imprint_wins()`
+
+`imprint_wins()` is the final step in every simulation. It:
+
+1. Processes all `self.record()` calls made during the spin into the `recorded_events` dictionary (used for force files and PAR sheet generation).
+2. Saves the completed book to `self.library`.
+3. Appends the payout multiplier to the internal payout list.
+4. Calls `win_manager.update_end_round_wins()` to accumulate running RTP totals printed to the terminal as threads finish.
+
+```python
+def imprint_wins(self) -> None:
+    """Record all events to library if criteria conditions are satisfied."""
+    for temp_win_index in range(int(len(self.temp_wins) / 2)):
+        description = tuple(sorted(self.temp_wins[2 * temp_win_index].items()))
+        book_id = self.temp_wins[2 * temp_win_index + 1]
+        if description in self.recorded_events and (
+            book_id not in self.recorded_events[description]["bookIds"]
+        ):
+            self.recorded_events[description]["timesTriggered"] += 1
+            self.recorded_events[description]["bookIds"] += [book_id]
+        elif description not in self.recorded_events:
+            self.check_force_keys(description)
+            self.recorded_events[description] = {
+                "timesTriggered": 1,
+                "bookIds": [book_id],
+            }
+    self.temp_wins = []
+    self.library[self.sim + 1] = copy(self.book.to_json())
+    self._payout_ints.append(self.library[self.sim + 1]["payoutMultiplier"])
+    self.win_manager.update_end_round_wins()
+```

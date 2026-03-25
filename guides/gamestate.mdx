@@ -1,0 +1,173 @@
+---
+title: "Implementing GameState"
+description: "Learn how to implement the run_spin() and run_freespin() methods that form the entry point for all Stake Engine simulations."
+---
+
+The `GameState` class is the simulation entry point. Every time the RGS calls the `play/` endpoint, it ultimately invokes `run_spin()` on your `GameState` instance. You are required to implement this method. For games with a free spin feature, you must also implement `run_freespin()`.
+
+## Class hierarchy
+
+`GameExecutables` and `GameCalculations` are child classes of `GameState` designed to hold game-specific logic. Splitting code this way keeps the simulation loop in `GameState` readable while delegating calculation and event-emission details to the appropriate subclass.
+
+```
+GameState
+  └── GameExecutables      (board draw, win evaluation, event emission)
+        └── GameCalculations   (game-specific math, custom win logic)
+```
+
+Both subclasses are typically defined in `game_executables.py` and `game_calculations.py` within the game's directory. Reusable utilities live in `/src/`; one-off game functionality lives in `/games/<game_id>/`.
+
+## Key properties
+
+| Property | Description |
+|---|---|
+| `self.board` | The current 2-D board of `Symbol` objects |
+| `self.gametype` | The active game type string (`"basegame"` or `"freegame"`) |
+| `self.repeat` | `True` while the engine should keep re-drawing until criteria are met |
+| `self.win_data` | Dict of the form `{"totalWin": float, "wins": list}` |
+| `self.win_manager` | `WalletManager` instance tracking cumulative wins |
+| `self.fs` | Current free spin index |
+| `self.tot_fs` | Total free spins awarded in the current feature |
+| `self.wincap_triggered` | `True` once the running win has reached `config.wincap` |
+
+## Implementing run_spin()
+
+`run_spin(self, sim)` is called once per simulation, where `sim` is the simulation number. The simulation number seeds the RNG and determines which distribution criteria apply to this spin.
+
+### The standard pattern
+
+```python gamestate.py
+def run_spin(self, sim, simulation_seed=None):
+    self.reset_seed(sim)          # seed the RNG with the simulation number
+    self.repeat = True
+    while self.repeat:
+        self.reset_book()         # reset local variables; sets self.repeat = False
+        self.draw_board()         # draw board from reelstrips
+
+        # 1. evaluate wins
+        self.win_data = Lines.get_lines(self.board, self.config)
+        # 2. update wallet
+        self.win_manager.update_spinwin(self.win_data["totalWin"])
+        # 3. emit events
+        Lines.emit_linewin_events(self)
+
+        self.win_manager.update_gametype_wins(self.gametype)  # record basegame wins
+
+        if self.check_fs_condition():       # check scatter trigger
+            self.run_freespin_from_base()   # run free spins if triggered
+
+        self.evaluate_finalwin()  # reconcile base + free wins, set payout
+        self.check_repeat()       # verify distribution criteria are satisfied
+
+    self.imprint_wins()           # persist simulation result
+```
+
+<Steps>
+  <Step title="Seed the RNG">
+    `reset_seed(sim)` uses the simulation number as the random seed. This makes every simulation deterministic and reproducible — re-running simulation 58 always produces the same board and outcome.
+  </Step>
+  <Step title="Enter the repeat loop">
+    `self.repeat = True` enters a loop that continues until `check_repeat()` confirms the simulation satisfies its pre-assigned distribution criteria. `reset_book()` sets `self.repeat = False` at the start of each attempt and clears all per-spin state.
+  </Step>
+  <Step title="Draw the board">
+    `draw_board()` selects reelstrip positions according to the current distribution's `reel_weights`, respecting any `force_freegame` or scatter-forcing rules from the active `BetMode`.
+  </Step>
+  <Step title="Evaluate wins, update wallet, emit events">
+    Call the appropriate win evaluation function (`Lines.get_lines()`, `Ways.get_ways_data()`, `Cluster.get_cluster_data()`, or `Scatter.get_scatterpay_wins()`), update the wallet manager with the result, then emit the corresponding win events. This three-step sequence should be repeated for each logical game action (tumbles, bonus rounds, etc.).
+  </Step>
+  <Step title="Record game-type wins">
+    `win_manager.update_gametype_wins(self.gametype)` marks all wins accumulated so far as belonging to the current game type. Call this once all base game actions are complete.
+  </Step>
+  <Step title="Check free spin condition">
+    `check_fs_condition()` reads `config.freespin_triggers` for the current game type. If scatter conditions are met, `run_freespin_from_base()` triggers the free game and allocates the initial spin count.
+  </Step>
+  <Step title="Evaluate final win">
+    `evaluate_finalwin()` sums base and free game wins, applies the wincap if needed, and sets the `payoutMultiplier` for this simulation.
+  </Step>
+  <Step title="Check repeat">
+    `check_repeat()` compares the final result against the distribution criteria pre-assigned to this simulation number. If they do not match (e.g. a `win_criteria` of `self.wincap` was required but not reached), `self.repeat` is set back to `True` and the loop restarts with the same seed.
+  </Step>
+  <Step title="Imprint wins">
+    `imprint_wins()` writes the final result, events, and payout multiplier to the output book. It also calls `wallet_manager.update_end_round_wins()` to update cumulative RTP counters.
+  </Step>
+</Steps>
+
+## Implementing run_freespin()
+
+For games with a free spin feature, implement `run_freespin()` alongside `run_spin()`. The engine calls this method from within `run_freespin_from_base()`, which handles the transition from base game type to free game type.
+
+```python gamestate.py
+def run_freespin(self):
+    self.reset_fs_spin()              # reset freegame state, set gametype
+    while self.fs < self.tot_fs:
+        self.update_freespin()        # increment spin counter, emit event
+        self.draw_board()             # draw board using freegame reelstrips
+
+        # 1. evaluate wins
+        self.win_data = Lines.get_lines(self.board, self.config)
+        # 2. update wallet
+        self.win_manager.update_spinwin(self.win_data["totalWin"])
+        # 3. emit events
+        Lines.emit_linewin_events(self)
+
+        if self.check_fs_condition():      # check retrigger
+            self.update_fs_retrigger_amt()
+
+        self.win_manager.update_gametype_wins(self.gametype)  # record freegame wins
+
+    self.end_freespin()  # emit final freespin total event
+```
+
+<Note>
+  `reset_fs_spin()` is called automatically at the start of `run_freespin()`. It sets `self.gametype` to `freegame_type` and resets spin counters, so you do not need to manage this transition manually.
+</Note>
+
+## Using GameExecutables and GameCalculations
+
+While it is possible to write all game logic directly in `run_spin()`, the recommended approach is to define helper methods in `GameExecutables` and `GameCalculations` and call them from the simulation loop:
+
+```python game_executables.py
+class GameExecutables(GameState):
+    def emit_linewin_events(self):
+        """Emit win events and update wincap."""
+        if self.win_manager.spin_win > 0:
+            win_info_event(self)
+            self.evaluate_wincap()
+            set_win_event(self)
+        set_total_event(self)
+
+    def apply_multiplier_symbols(self):
+        """Read multiplier symbols from the board and update global mult."""
+        for reel in self.board:
+            for sym in reel:
+                if sym.check_attribute("multiplier"):
+                    self.global_mult += sym.get_attribute("multiplier")
+```
+
+```python game_calculations.py
+class GameCalculations(GameExecutables):
+    def get_lines(self):
+        """Evaluate line wins with current global multiplier."""
+        return Lines.get_lines(
+            self.board,
+            self.config,
+            global_multiplier=self.global_mult,
+        )
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Game Configuration" icon="gear" href="/guides/configuration">
+    Set up the GameConfig class with reels, paytables, and symbols.
+  </Card>
+  <Card title="Game Events" icon="bell" href="/guides/events">
+    Emit structured events that drive frontend display.
+  </Card>
+  <Card title="Win Types" icon="trophy" href="/guides/win-types">
+    Choose and call the right win evaluation function.
+  </Card>
+  <Card title="GameState API reference" icon="book" href="/api/gamestate">
+    Full reference for all GameState properties and methods.
+  </Card>
+</CardGroup>

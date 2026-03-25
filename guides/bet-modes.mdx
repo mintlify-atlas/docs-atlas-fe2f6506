@@ -1,0 +1,289 @@
+---
+title: "Bet Modes & Distributions"
+description: "Configure BetMode and Distribution classes to control cost, RTP targets, max win limits, and per-simulation win criteria for each game mode."
+---
+
+Every game mode — base game, free spin purchase, bonus buy — is defined as a `BetMode` instance in `config.bet_modes`. Bet modes control how much a spin costs, what RTP it targets, what the maximum win is, and — crucially — how simulation outcomes are pre-allocated to ensure the game hits its mathematical targets.
+
+## The BetMode class
+
+```python game_config.py
+from src.config.betmode import BetMode, Distribution
+
+self.bet_modes = [
+    BetMode(
+        name="base",
+        cost=1.0,
+        rtp=self.rtp,
+        max_win=self.wincap,
+        auto_close_disabled=False,
+        is_feature=True,
+        is_buybonus=False,
+        distributions=[...],
+    ),
+]
+```
+
+### BetMode fields
+
+<ParamField path="body.name" type="string" required>
+  Unique identifier for this bet mode. Used as the key in `num_sim_args` in `run.py` and referenced throughout the library output.
+</ParamField>
+
+<ParamField path="body.cost" type="number" required>
+  Bet cost multiplier. A value of `1.0` means the player bets 1 unit. A bonus-buy mode might use `100.0` to indicate a 100x stake purchase.
+</ParamField>
+
+<ParamField path="body.rtp" type="number" required>
+  Target RTP for this mode, typically `self.rtp`. The optimization algorithm uses this value to weight simulations appropriately.
+</ParamField>
+
+<ParamField path="body.max_win" type="number" required>
+  Maximum win multiplier for this mode. Usually `self.wincap`. The engine caps all wins at this value.
+</ParamField>
+
+<ParamField path="body.auto_close_disabled" type="boolean" default="false">
+  When `False` (default), the RGS automatically calls `/endround` to close the bet once the round completes. Set to `True` for bonus modes where a player might resume an interrupted session — in that case the frontend must close the round manually.
+</ParamField>
+
+<ParamField path="body.is_feature" type="boolean" default="false">
+  When `True`, the frontend preserves the current bet mode without requiring player interaction between rounds. Useful for "feature" modes that automatically repeat until complete.
+</ParamField>
+
+<ParamField path="body.is_buybonus" type="boolean" default="false">
+  Signals to the frontend that this mode was purchased directly (a buy-bonus or bonus-buy feature). The frontend may use this to switch asset sets or apply regulatory restrictions.
+</ParamField>
+
+<ParamField path="body.distributions" type="object[]" required>
+  List of `Distribution` instances defining how simulation outcomes are pre-assigned. See [Distributions](#distributions) below.
+</ParamField>
+
+## Distributions
+
+Each `BetMode` contains a list of `Distribution` objects. A distribution assigns a proportion of simulations to a named criteria bucket, and specifies the conditions (reel weights, forcing flags, custom parameters) that should apply to simulations in that bucket.
+
+This mechanism lets you control the hit-rate and RTP contribution of specific game events — max-win spins, free-spin entry, zero-win spins — without relying on random chance alone.
+
+```python game_config.py
+Distribution(
+    criteria="winCap",
+    quota=0.001,
+    win_criteria=self.wincap,
+    conditions={
+        "reel_weights": {
+            self.basegame_type: {"BR0": 1},
+            self.freegame_type: {"FR0": 1},
+        },
+        "force_wincap": True,
+        "force_freegame": True,
+    },
+)
+```
+
+### Distribution fields
+
+<ParamField path="body.criteria" type="string" required>
+  A short name identifying this win condition — for example `"winCap"`, `"freegame"`, `"basegame"`, or `"0"`. This value appears in the lookup table output files to identify which bucket each simulation belongs to.
+</ParamField>
+
+<ParamField path="body.quota" type="number" required>
+  The fraction of simulations (as a proportion of the total for this bet mode) that should be assigned to this criteria. Quotas are normalised automatically, so they do not need to sum to exactly 1. A minimum of 1 simulation is always assigned per criteria, regardless of quota size.
+</ParamField>
+
+<ParamField path="body.conditions" type="object" required>
+  A dict of conditions that apply to simulations in this bucket. Read at runtime using `get_distribution_conditions()`. Must include `reel_weights`. See [Conditions keys](#conditions-keys) below.
+</ParamField>
+
+<ParamField path="body.win_criteria" type="number">
+  Optional expected payout multiplier for simulations in this bucket. When set, `check_repeat()` verifies the final win matches this value. Use `0.0` to enforce zero-win simulations and `self.wincap` to enforce max-win simulations. Defaults to `None` (no win constraint).
+</ParamField>
+
+### Conditions keys
+
+The `conditions` dict can contain any custom keys your `run_spin()` reads via `get_distribution_conditions()`. The three built-in keys are:
+
+| Key | Type | Description |
+|---|---|---|
+| `reel_weights` | `dict` | Weighted selection of reelstrip IDs per game type. Required. |
+| `force_wincap` | `bool` | When `True`, `draw_board()` forces a board that hits the wincap. Defaults to `False`. |
+| `force_freegame` | `bool` | When `True`, `draw_board()` forces a board that triggers the free game. Defaults to `False`. |
+
+Custom keys are passed through unchanged and can hold any value:
+
+```python game_config.py
+conditions={
+    "reel_weights": {
+        self.basegame_type: {"BR0": 1},
+        self.freegame_type: {"FR0": 1, "WCAP": 5},
+    },
+    "mult_values": {
+        self.basegame_type: {1: 1},
+        self.freegame_type: {2: 10, 3: 20, 5: 60, 10: 100},
+    },
+    "scatter_triggers": {3: 20, 4: 10, 5: 2},
+    "force_wincap": False,
+    "force_freegame": True,
+},
+```
+
+## Reading conditions at runtime
+
+In `run_spin()` or `run_freespin()`, read the active distribution's conditions using `get_distribution_conditions()`:
+
+```python gamestate.py
+# Draw multiplier from the distribution-specific weight table
+multiplier = get_random_outcome(
+    self.betmode.get_distribution_conditions()["mult_values"][self.gametype]
+)
+
+# Check if this simulation should force a freegame board
+if self.betmode.get_distribution_conditions()["force_freegame"]:
+    # bias board draw toward freegame trigger
+    ...
+```
+
+This is the primary mechanism for adapting game logic based on the known expected outcome of a simulation — for example, drawing from a multiplier distribution weighted toward high values when the simulation is pre-assigned to the `winCap` criteria.
+
+## check_repeat() and win verification
+
+At the end of `run_spin()`, `check_repeat()` verifies that the completed simulation satisfies its pre-assigned criteria:
+
+- If `win_criteria` is `None`: no win constraint, `check_repeat()` always passes.
+- If `win_criteria` is `0.0`: the final win must be exactly `0.0`.
+- If `win_criteria` is `self.wincap`: the final win must equal the wincap.
+
+If the criteria are not met, `self.repeat` is set back to `True` and the simulation is re-run from `reset_book()` with the same random seed.
+
+## Full BetMode example
+
+The following example is taken from the sample lines game. It defines a bonus buy mode with two distributions: a small quota of wincap simulations and a larger quota of regular freegame simulations.
+
+```python game_config.py
+BetMode(
+    name="bonus",
+    cost=100.0,
+    rtp=self.rtp,
+    max_win=self.wincap,
+    auto_close_disabled=False,
+    is_feature=False,
+    is_buybonus=True,
+    distributions=[
+        Distribution(
+            criteria="wincap",
+            quota=0.001,
+            win_criteria=self.wincap,
+            conditions={
+                "reel_weights": {
+                    self.basegame_type: {"BR0": 1},
+                    self.freegame_type: {"FR0": 1, "WCAP": 5},
+                },
+                "mult_values": {
+                    self.basegame_type: {1: 1},
+                    self.freegame_type: {2: 10, 3: 20, 4: 50, 5: 60, 10: 100, 20: 90, 50: 50},
+                },
+                "scatter_triggers": {4: 1, 5: 2},
+                "force_wincap": True,
+                "force_freegame": True,
+            },
+        ),
+        Distribution(
+            criteria="freegame",
+            quota=0.999,
+            conditions={
+                "reel_weights": {
+                    self.basegame_type: {"BR0": 1},
+                    self.freegame_type: {"FR0": 1},
+                },
+                "scatter_triggers": {3: 20, 4: 10, 5: 2},
+                "mult_values": {
+                    self.basegame_type: {1: 1},
+                    self.freegame_type: {2: 100, 3: 80, 4: 50, 5: 20, 10: 10, 20: 5, 50: 1},
+                },
+                "force_wincap": False,
+                "force_freegame": True,
+            },
+        ),
+    ],
+)
+```
+
+And the base game mode with four distributions controlling zero-win, basegame-win, freegame, and wincap hit-rates:
+
+```python game_config.py
+BetMode(
+    name="base",
+    cost=1.0,
+    rtp=self.rtp,
+    max_win=self.wincap,
+    auto_close_disabled=False,
+    is_feature=True,
+    is_buybonus=False,
+    distributions=[
+        Distribution(
+            criteria="winCap",
+            quota=0.001,
+            win_criteria=self.wincap,
+            conditions={
+                "reel_weights": {
+                    self.basegame_type: {"BR0": 1},
+                    self.freegame_type: {"FR0": 1},
+                },
+                "force_wincap": True,
+                "force_freegame": True,
+            },
+        ),
+        Distribution(
+            criteria="freegame",
+            quota=0.1,
+            conditions={
+                "reel_weights": {
+                    self.basegame_type: {"BR0": 1},
+                    self.freegame_type: {"FR0": 1},
+                },
+                "force_wincap": False,
+                "force_freegame": True,
+            },
+        ),
+        Distribution(
+            criteria="0",
+            quota=0.4,
+            win_criteria=0.0,
+            conditions={
+                "reel_weights": {self.basegame_type: {"BR0": 1}},
+            },
+        ),
+        Distribution(
+            criteria="basegame",
+            quota=0.5,
+            conditions={
+                "reel_weights": {self.basegame_type: {"BR0": 1}},
+            },
+        ),
+    ],
+)
+```
+
+<Warning>
+  The order of distributions matters for exclusive simulation assignment. Simulations are assigned to criteria buckets in order, and a given simulation number belongs to exactly one criteria bucket. Place more restrictive or rare criteria (like `winCap`) first so that their simulations are reserved before the larger buckets are filled.
+</Warning>
+
+## Quota normalisation
+
+Quotas are normalised to sum to 1 internally, so you do not need to ensure they add up exactly. For example, quotas of `0.001`, `0.1`, `0.4`, and `0.5` are valid — they sum to `1.001`, which is fine. The engine also guarantees a minimum of 1 simulation per criteria bucket, regardless of how small the quota is.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Game Configuration" icon="gear" href="/guides/configuration">
+    Add BetMode instances to config.bet_modes.
+  </Card>
+  <Card title="Implementing GameState" icon="code" href="/guides/gamestate">
+    Use get_distribution_conditions() in run_spin().
+  </Card>
+  <Card title="Concepts: simulation lifecycle" icon="rotate" href="/concepts/simulation-lifecycle">
+    Understand how simulation numbers map to criteria buckets.
+  </Card>
+  <Card title="Config API reference" icon="book" href="/api/config">
+    Full reference for the Config base class.
+  </Card>
+</CardGroup>

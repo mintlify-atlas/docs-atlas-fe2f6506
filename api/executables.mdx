@@ -1,0 +1,252 @@
+---
+title: "Executables"
+description: "Reusable game logic and event emission functions."
+---
+
+The `Executables` class (`src/executables/executables.py`) groups common spin actions that most games need. It sits in the middle of the class hierarchy between `Conditions` and your `GameExecutables`, so every method is available on `self` inside `GameState`.
+
+Functions in `Executables` do not return values (unless documented otherwise). They mutate gamestate and emit events as side effects.
+
+## Class hierarchy context
+
+```
+Conditions → Executables → GameExecutables → GameStateOverride → GameState
+```
+
+To override any method for a specific game, define it with the same signature in `GameExecutables` or `GameStateOverride`.
+
+## Dependencies
+
+`Executables` inherits from and relies on:
+
+- `src.state.state_conditions.Conditions` — state query helpers
+- `src.calculations.board.Board` — `draw_board`, `force_special_board`, `get_syms_on_reel`, `count_special_symbols`
+- `src.calculations.tumble.Tumble` — `tumble_board()`
+- `src.events.events` — all event emission functions
+
+<Note>
+`emit_linewin_events()` lives on the `Lines` class (`src/calculations/lines.py`), and `emit_wayswin_events()` lives on the `Ways` class (`src/calculations/ways.py`). Call them as static methods: `Lines.emit_linewin_events(self)` and `Ways.emit_wayswin_events(self)`. They are not defined on `Executables`.
+</Note>
+
+## Board functions
+
+### draw_board()
+
+```python
+def draw_board(self, emit_event: bool = True, trigger_symbol: str = "scatter") -> None
+```
+
+Draws the active board from reel strips and optionally emits a `reveal` event.
+
+Behavior depends on the active distribution's `force_freegame` condition:
+
+- **`force_freegame = True` in basegame** — randomly selects a scatter count from `scatter_triggers` in the distribution conditions and calls `force_special_board()` to guarantee exactly that many scatters on the board.
+- **`force_freegame = False` in basegame** — generates boards until none have enough scatters to trigger free spins (prevents accidental freegame entry in non-freegame criteria).
+- **In freegame** — draws normally from reel strips with no scatter constraint.
+
+<ParamField path="emit_event" type="bool" default="True">
+  When `True`, calls `reveal_event()` after drawing. Pass `False` when you need to inspect the board before emitting.
+</ParamField>
+
+<ParamField path="trigger_symbol" type="string" default="scatter">
+  The special symbol attribute key used to count trigger symbols. Change this if your game uses a different key for the freespin trigger (e.g. `"bonus"`).
+</ParamField>
+
+### force_special_board()
+
+```python
+def force_special_board(self, force_criteria: str, num_force_syms: int) -> None
+```
+
+Forces the board to contain exactly `num_force_syms` symbols of the given type. Retries internally until the exact count is achieved. Uses weighted random reel-stop selection.
+
+<Warning>
+  If stacked scatter symbols exist on a reel (multiple scatters on consecutive stops), this method cannot guarantee an exact count. Ensure scatter symbols are not stacked on reel strips when using forced scatter boards.
+</Warning>
+
+<ParamField path="force_criteria" type="string">
+  Special symbol attribute key to force (e.g. `"scatter"`, `"bonus"`).
+</ParamField>
+
+<ParamField path="num_force_syms" type="int">
+  Exact number of that symbol type that must appear on the board.
+</ParamField>
+
+### get_syms_on_reel()
+
+```python
+def get_syms_on_reel(self, reel_id: str, target_symbol: str) -> list[list]
+```
+
+Returns the reel-stop index positions where `target_symbol` (or any symbol with that special attribute) appears on the given reel strip. Returns a list with one entry per reel, each being a list of integer stop indices.
+
+```python
+positions = self.get_syms_on_reel("BR0", "scatter")
+# positions[2] -> [14, 38, 67]  (scatter appears at stops 14, 38, 67 on reel 3)
+```
+
+## Win event functions
+
+### emit_tumble_win_events()
+
+```python
+def emit_tumble_win_events(self) -> None
+```
+
+Transmits `winInfo` and `updateTumbleWin` events for the current tumble step, then calls `evaluate_wincap()`. Only emits if `win_data["totalWin"] > 0`.
+
+## Tumble functions
+
+### tumble_game_board()
+
+```python
+def tumble_game_board(self) -> None
+```
+
+Removes winning symbol positions from the board and cascades remaining symbols down. Emits a `tumbleBoard` event containing the positions of removed symbols and the new symbols that replaced them.
+
+Call after evaluating wins and emitting win events during a tumble sequence:
+
+```python
+while self.win_data["totalWin"] > 0 and not self.wincap_triggered:
+    self.emit_tumble_win_events()
+    self.tumble_game_board()
+    self.evaluate_cluster_board()  # re-evaluate on new board
+```
+
+## Win cap
+
+### evaluate_wincap()
+
+```python
+def evaluate_wincap(self) -> bool
+```
+
+Checks if `win_manager.running_bet_win >= config.wincap`. If so, sets `self.wincap_triggered = True` and emits a `wincap` event. Returns `True` if wincap was triggered, `False` otherwise.
+
+Once triggered, win events stop being emitted and `check_repeat()` no longer retries on win criteria.
+
+## Special symbol helpers
+
+### count_special_symbols()
+
+```python
+def count_special_symbols(self, special_sym_criteria: str) -> int
+```
+
+Returns the number of symbols currently on the board that have the given special attribute. Reads from `self.special_syms_on_board` which is populated by the board drawing step.
+
+```python
+scatter_count = self.count_special_symbols("scatter")  # e.g. 3
+```
+
+## Free spin functions
+
+### check_fs_condition()
+
+```python
+def check_fs_condition(self, scatter_key: str = "scatter") -> bool
+```
+
+Returns `True` if the scatter count on the current board meets or exceeds the minimum trigger threshold defined in `config.freespin_triggers[gametype]`, and `self.repeat` is `False`.
+
+### check_freespin_entry()
+
+```python
+def check_freespin_entry(self, scatter_key: str = "scatter") -> bool
+```
+
+Verifies that the active distribution criteria expects a free spin trigger (i.e. `force_freegame = True`). If not, sets `self.repeat = True` to retry the simulation. Use this when a free spin must only occur in designated criteria.
+
+### run_freespin_from_base()
+
+```python
+def run_freespin_from_base(self, scatter_key: str = "scatter") -> None
+```
+
+Records the scatter trigger event via `self.record()`, sets the total free spin count via `update_freespin_amount()`, then calls `self.run_freespin()`.
+
+This is the standard free spin entry point from the base game:
+
+```python
+if self.check_fs_condition():
+    self.run_freespin_from_base()
+```
+
+### update_freespin_amount()
+
+```python
+def update_freespin_amount(self, scatter_key: str = "scatter") -> None
+```
+
+Sets `self.tot_fs` to the number of free spins corresponding to the current scatter count, looked up from `config.freespin_triggers[gametype]`. Emits a `freeSpinTrigger` event (from basegame) or `freeSpinRetrigger` event (from freegame).
+
+### update_fs_retrigger_amt()
+
+```python
+def update_fs_retrigger_amt(self, scatter_key: str = "scatter") -> None
+```
+
+Adds additional free spins to `self.tot_fs` when a retrigger scatter condition is met during the free game. Emits a `freeSpinRetrigger` event.
+
+```python
+# Inside run_freespin():
+if self.check_fs_condition():
+    self.update_fs_retrigger_amt()
+```
+
+### update_freespin()
+
+```python
+def update_freespin(self) -> None
+```
+
+Called at the top of the free spin loop before drawing the board. Emits an `updateFreeSpin` event, increments `self.fs`, and resets `win_manager.spin_win` to zero.
+
+### end_freespin()
+
+```python
+def end_freespin(self) -> None
+```
+
+Emits a `freeSpinEnd` event containing the total amount won during the free game and the corresponding win level. Call this once the free spin loop completes.
+
+## Final win
+
+### evaluate_finalwin()
+
+```python
+def evaluate_finalwin(self) -> None
+```
+
+Calls `update_final_win()` to compute and verify the payout multiplier, then emits a `finalWin` event. Always the last action inside the spin retry loop before `check_repeat()`.
+
+## Global multiplier
+
+### update_global_mult()
+
+```python
+def update_global_mult(self) -> None
+```
+
+Increments `self.global_multiplier` by 1 and emits an `updateGlobalMult` event. Call this whenever the multiplier increases (e.g. on each winning tumble).
+
+```python
+if tumble_won:
+    self.update_global_mult()
+    self.tumble_game_board()
+```
+
+## Overriding a function
+
+Define the method with the same signature in `GameExecutables` or `GameStateOverride`. The MRO ensures your version is called:
+
+```python game_executables.py
+class GameExecutables(GameCalculations):
+
+    def check_fs_condition(self, scatter_key="scatter"):
+        """Custom logic: only trigger freegame after a win."""
+        if self.win_data.get("totalWin", 0) == 0:
+            return False
+        return super().check_fs_condition(scatter_key)
+```

@@ -1,0 +1,164 @@
+---
+title: "Scatter Wins"
+description: "Evaluate pay-anywhere wins where the total count of a symbol anywhere on the board determines the payout."
+---
+
+The `Scatter` class evaluates wins for games where symbols do not need to be adjacent or on specific paylines. Instead, the total count of each symbol type anywhere on the board determines whether a win occurs.
+
+## How scatter wins work
+
+For each non-wild symbol, the engine counts its total appearances on the board. Wild symbols are appended to every symbol's position list before lookup. If `(total_count, symbol)` exists in `config.paytable`, a win is recorded.
+
+A minimum of 8 like-symbols is typical to trigger a win, but the minimum is determined entirely by the lowest `kind` entry for that symbol in `config.paytable`.
+
+## Configuration
+
+Because the count can range from the minimum up to the full board size, range-based paytables are common. Use `convert_range_table()` on `Config` to generate `config.paytable` from a compact `pay_group`:
+
+```python
+pay_group = {
+    ((min_kind, max_kind), symbol): payout,
+    ...
+}
+```
+
+<ParamField path="config.paytable" type="dict" required>
+  Maps `(count, symbol)` tuples to payout multipliers. Generated via `config.convert_range_table(pay_group)`.
+
+  ```python
+  pay_group = {
+      ((8, 8),   "H1"): 1.0,
+      ((9, 9),   "H1"): 2.0,
+      ((10, 12), "H1"): 5.0,
+      ((13, 25), "H1"): 20.0,
+  }
+  config.convert_range_table(pay_group)
+  # Generates: {(8,"H1"): 1.0, (9,"H1"): 2.0, (10,"H1"): 5.0, ..., (25,"H1"): 20.0}
+  ```
+
+  Range bounds are inclusive.
+</ParamField>
+
+## `Scatter.get_scatterpay_wins()`
+
+```python
+Scatter.get_scatterpay_wins(
+    config: Config,
+    board: list[list[Symbol]],
+    wild_key: str = "wild",
+    multiplier_key: str = "multiplier",
+    global_multiplier: int = 1,
+) -> dict
+```
+
+<ParamField path="config" type="Config" required>
+  Game configuration with `config.paytable` and `config.special_symbols` populated.
+</ParamField>
+
+<ParamField path="board" type="list[list[Symbol]]" required>
+  Active game board indexed as `board[reel][row]`.
+</ParamField>
+
+<ParamField path="wild_key" type="str" default="wild">
+  Symbol attribute key identifying wild symbols. Wilds are added to every symbol's count.
+</ParamField>
+
+<ParamField path="multiplier_key" type="str" default="multiplier">
+  Symbol attribute key for reading per-symbol multiplier values.
+</ParamField>
+
+<ParamField path="global_multiplier" type="int" default="1">
+  Scalar multiplier applied to all wins.
+</ParamField>
+
+### Return value
+
+```python
+win_data = {
+    "totalWin": float,
+    "wins": [
+        {
+            "symbol": str,
+            "win": float,
+            "positions": [{"reel": int, "row": int}, ...],
+            "meta": {
+                "globalMult": int,
+                "clusterMult": int,
+                "winWithoutMult": float,
+                "overlay": {"reel": int, "row": int},
+            },
+        }
+    ],
+}
+```
+
+<ResponseField name="totalWin" type="float">
+  Sum of all scatter wins for this board state.
+</ResponseField>
+
+<ResponseField name="wins" type="list">
+  One entry per paying symbol type.
+
+  <Expandable title="win entry fields">
+    <ResponseField name="symbol" type="str">
+      Name of the winning symbol.
+    </ResponseField>
+    <ResponseField name="win" type="float">
+      Final payout: `paytable[(count, symbol)] × globalMult × clusterMult`.
+    </ResponseField>
+    <ResponseField name="positions" type="list">
+      All positions of the winning symbol (including wilds) as `{"reel": int, "row": int}`.
+    </ResponseField>
+    <ResponseField name="meta" type="object">
+      <Expandable title="meta fields">
+        <ResponseField name="globalMult" type="int">
+          The `global_multiplier` passed into `get_scatterpay_wins()`.
+        </ResponseField>
+        <ResponseField name="clusterMult" type="int">
+          Sum of `multiplier` attribute values from all winning positions. Minimum value is `1`.
+        </ResponseField>
+        <ResponseField name="winWithoutMult" type="float">
+          Raw payout from `config.paytable` before multipliers.
+        </ResponseField>
+        <ResponseField name="overlay" type="object">
+          Board position closest to the board center (without reusing rows already assigned to other symbols) where the win amount overlay should be displayed: `{"reel": int, "row": int}`.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Exploding symbols and tumble integration
+
+All winning symbol positions (and wild positions included in wins) have `explode = True` set during `get_scatterpay_wins()`. This enables the `Tumble` class to remove them and cascade new symbols. The typical tumble loop:
+
+```python
+# Initial evaluation
+self.win_data = Scatter.get_scatterpay_wins(
+    self.config, self.board, global_multiplier=self.global_mult
+)
+self.win_manager.update_spinwin(self.win_data["totalWin"])
+
+# Cascade loop
+while self.win_data["totalWin"] > 0 and not self.wincap_triggered:
+    self.tumble_board()
+    self.win_data = Scatter.get_scatterpay_wins(
+        self.config, self.board, global_multiplier=self.global_mult
+    )
+    self.win_manager.update_spinwin(self.win_data["totalWin"])
+    self.emit_tumble_win_events()
+```
+
+## Additional methods
+
+### `Scatter.record_scatter_wins(gamestate)`
+
+Writes force-file entries for each scatter win, keyed by `kind` (total symbol count), `symbol`, combined `totalMult`, and `gametype`.
+
+<Tip>
+Scatter pays games typically use a cascading mechanic. Pair `get_scatterpay_wins()` with `tumble_board()` from the `Tumble` class for a complete cascade loop.
+</Tip>
+
+<Note>
+Wild symbols are shared across all symbol counts — a wild contributes to the win count of every non-wild symbol simultaneously. This is the key behavioral difference from cluster pays, where wilds contribute to only the adjacent cluster.
+</Note>

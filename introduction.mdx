@@ -1,0 +1,78 @@
+---
+title: "Introduction"
+description: "The Stake Engine Math SDK is a Python-based engine for defining slot game rules, simulating outcomes, and generating all backend files required by the Stake Engine RGS."
+---
+
+The Math SDK is one half of the Stake Development Kit. It handles everything on the server side: defining game rules, running simulations, optimizing win distributions, and producing the static files that the Stake Engine Remote Gaming Server (RGS) uses to serve real-money rounds.
+
+<Note>
+  These docs cover the **Math SDK** only. The companion Frontend SDK (PixiJS/Svelte) is documented separately.
+</Note>
+
+## What the Math SDK does
+
+When a player places a bet, the RGS does not compute a result in real time. Instead, it selects from a pre-generated set of outcomes stored in compressed static files. The Math SDK is the tool that produces those files.
+
+Given a game definition, the SDK:
+
+1. Simulates thousands of game rounds according to the rules you write in Python.
+2. Writes every outcome to a **books** file (`.jsonl` or `.jsonl.zst`).
+3. Builds **lookup tables** (CSV) that map each simulation ID to its payout multiplier and selection weight.
+4. Runs an **optimization algorithm** (Rust/Cargo) that adjusts selection weights so the overall RTP matches your target.
+5. Generates a **game config** file consumed by the frontend and the RGS.
+
+All publish-ready output lands in `library/publish_files/`.
+
+## How it fits into Stake Engine
+
+Stake Engine requires that every game consist entirely of static files — no real-time math on the RGS. When a betting round starts, the `play/` API selects a simulation number at a frequency proportional to the simulation weighting, then returns the corresponding `events` array from the books file as the round response.
+
+This means:
+
+- **Every possible outcome is pre-computed.** The SDK must be re-run whenever game rules change.
+- **Probability is controlled by weights, not by runtime RNG.** The optimization step sets those weights.
+- **The frontend receives a deterministic event sequence.** The books file is the source of truth for what the player sees.
+
+## The two-part SDK
+
+| Component | Language | Purpose |
+|---|---|---|
+| Math SDK (this docs) | Python | Game rules, simulation, optimization, static file generation |
+| Frontend SDK | PixiJS / Svelte | In-browser rendering, animation, event handling |
+
+The two halves communicate through the static file format: the math output drives what the frontend displays.
+
+## Key concepts
+
+**`GameConfig`** — Defines all game parameters: reel strips, paytable, special symbols, RTP targets, win cap, and `BetMode` list. Every game has one.
+
+**`GameState`** — Executes a single game round given a `GameConfig`. Implements the spin logic, win evaluation, and event emission for your specific game mechanics.
+
+**`BetMode`** — Describes one purchasable mode (base game, buy-bonus, etc.), including its cost multiplier, RTP target, and simulation `Distribution` quotas that control how many forced outcomes of each type are generated.
+
+**`create_books`** — The top-level function that runs `GameState` in parallel across many threads to produce the books and lookup table files.
+
+**Optimization** — A Rust program that reads the lookup tables and adjusts per-simulation selection weights to hit the configured RTP target within tolerance.
+
+## Explore the docs
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Clone the repo, run `make setup`, and execute your first game in under five minutes.
+  </Card>
+  <Card title="Installation" icon="wrench" href="/installation">
+    System requirements, virtual environment setup, and optional Rust install.
+  </Card>
+  <Card title="Game format" icon="file-code" href="/concepts/game-format">
+    Understand the static file format the RGS expects.
+  </Card>
+  <Card title="Game structure" icon="folder-open" href="/concepts/game-structure">
+    How a game directory is organized and what each file does.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/guides/configuration">
+    Configure `GameConfig`, paytables, reel strips, and bet modes.
+  </Card>
+  <Card title="Examples" icon="gamepad" href="/examples/overview">
+    Walk through the included sample games: lines, ways, cluster, scatter.
+  </Card>
+</CardGroup>

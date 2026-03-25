@@ -1,0 +1,192 @@
+---
+title: "Line Wins"
+description: "Evaluate payline-based winning combinations across a fixed set of defined lines."
+---
+
+The `Lines` class evaluates the active game board against a set of defined paylines. For each payline, it scans for consecutive matching symbols (including wilds) from reel 0 outward and computes payouts from `config.paytable`.
+
+## Configuration
+
+Line wins require two config fields:
+
+<ParamField path="config.paytable" type="dict" required>
+  Maps `(kind, symbol)` tuples to payout multipliers.
+
+  ```python
+  config.paytable = {
+      (3, "H1"): 1.0,
+      (4, "H1"): 5.0,
+      (5, "H1"): 20.0,
+      (3, "W"):  2.0,   # Wild-only payout
+      (5, "W"):  50.0,
+  }
+  ```
+</ParamField>
+
+<ParamField path="config.paylines" type="dict" required>
+  Maps a line index to an array of row positions — one per reel. Each entry defines which row on each reel forms the payline.
+
+  ```python
+  config.paylines = {
+      0: [0, 0, 0, 0, 0],   # top row straight across
+      1: [1, 1, 1, 1, 1],   # middle row straight across
+      2: [0, 1, 0, 1, 0],   # zigzag line
+      # ...
+  }
+  ```
+</ParamField>
+
+## `Lines.get_lines()`
+
+```python
+Lines.get_lines(
+    board: list[list[Symbol]],
+    config: Config,
+    wild_key: str = "wild",
+    wild_sym: str = "W",
+    multiplier_method: str = "symbol",
+    global_multiplier: int = 1,
+) -> dict
+```
+
+Iterates every defined payline and returns all winning combinations.
+
+<ParamField path="board" type="list[list[Symbol]]" required>
+  The active game board — a 2D list of `Symbol` objects indexed as `board[reel][row]`.
+</ParamField>
+
+<ParamField path="config" type="Config" required>
+  Game configuration object. Must have `config.paytable` and `config.paylines` populated.
+</ParamField>
+
+<ParamField path="wild_key" type="str" default="wild">
+  The symbol attribute name used to identify wild symbols. Defaults to `"wild"`.
+</ParamField>
+
+<ParamField path="wild_sym" type="str" default="W">
+  The symbol name used to look up wild-only payouts in `config.paytable`. Defaults to `"W"`.
+</ParamField>
+
+<ParamField path="multiplier_method" type="str" default="symbol">
+  Multiplier strategy to apply. One of `"symbol"`, `"global"`, or `"combined"`. See [Multiplier strategies](#multiplier-strategies).
+</ParamField>
+
+<ParamField path="global_multiplier" type="int" default="1">
+  A scalar multiplier applied to every win when using the `"global"` or `"combined"` strategies.
+</ParamField>
+
+### Return value
+
+```python
+win_data = {
+    "totalWin": float,
+    "wins": [
+        {
+            "symbol": str,
+            "kind": int,
+            "win": float,
+            "positions": [{"reel": int, "row": int}, ...],
+            "meta": {
+                "lineIndex": int,
+                "multiplier": int,
+                "winWithoutMult": float,
+                "globalMult": int,
+                "lineMultiplier": int,
+            },
+        }
+    ],
+}
+```
+
+<ResponseField name="totalWin" type="float">
+  Sum of all winning line payouts for this board state, after multipliers.
+</ResponseField>
+
+<ResponseField name="wins" type="list">
+  One entry per winning payline.
+
+  <Expandable title="win entry fields">
+    <ResponseField name="symbol" type="str">
+      Name of the winning symbol (first non-wild, or `"W"` for a pure-wild win).
+    </ResponseField>
+    <ResponseField name="kind" type="int">
+      Number of consecutive matching symbols in the winning combination.
+    </ResponseField>
+    <ResponseField name="win" type="float">
+      Final payout after multipliers applied.
+    </ResponseField>
+    <ResponseField name="positions" type="list">
+      Board positions contributing to the win, each as `{"reel": int, "row": int}`.
+    </ResponseField>
+    <ResponseField name="meta" type="object">
+      <Expandable title="meta fields">
+        <ResponseField name="lineIndex" type="int">
+          Index of the winning payline as defined in `config.paylines`.
+        </ResponseField>
+        <ResponseField name="multiplier" type="int">
+          Total multiplier applied to the base win (symbol × global).
+        </ResponseField>
+        <ResponseField name="winWithoutMult" type="float">
+          Raw payout from `config.paytable` before any multiplier is applied.
+        </ResponseField>
+        <ResponseField name="globalMult" type="int">
+          The global multiplier value passed into `get_lines()`.
+        </ResponseField>
+        <ResponseField name="lineMultiplier" type="int">
+          The symbol-level multiplier component: `multiplier / globalMult`.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Wild substitution
+
+On each payline, the evaluation tracks two potential wins simultaneously:
+
+- **Wild-only win** — using the `(kind, "W")` paytable key, counting only the leading wild symbols.
+- **Base win** — using `(kind, symbol)` for the first non-wild symbol found, counting wilds + matching symbols.
+
+Both are looked up in `config.paytable`. The higher payout wins. If the wild-only payout exceeds the substituted symbol payout, only the leading wild positions are included.
+
+<Note>
+In lines games, a payline beginning with wilds is valid. The evaluation handles all-wild paylines as wild-only wins (looking up `(wild_matches, wild_sym)` in the paytable). To prevent 3/4-kind wilds from outpaying longer non-wild combinations, only define wild payouts at the maximum kind (e.g. 5-kind only).
+</Note>
+
+## Multiplier strategies
+
+`get_lines()` delegates to `apply_mult()` from `src/wins/multiplier_strategy.py`.
+
+| Strategy | Behavior |
+|---|---|
+| `"global"` | Multiplies the base win by `global_multiplier`. Symbol attributes are ignored. |
+| `"symbol"` | Sums `multiplier` attribute values from all winning positions (minimum 1). Result applied to base win. `global_multiplier` is ignored. |
+| `"combined"` | Applies symbol multipliers first (additive sum), then multiplies by `global_multiplier`. |
+
+## Additional methods
+
+### `Lines.emit_linewin_events(gamestate)`
+
+Emits `win_info`, `set_win`, and `set_total` events if `win_manager.spin_win > 0`. Also calls `gamestate.evaluate_wincap()`.
+
+### `Lines.record_lines_wins(gamestate)`
+
+Writes force-file entries for each line win, keyed by `kind`, `symbol`, `mult`, and `gametype`.
+
+## Usage
+
+```python
+# Inside GameState.run_spin()
+self.win_data = Lines.get_lines(
+    self.board,
+    self.config,
+    multiplier_method="symbol",
+    global_multiplier=self.current_global_mult,
+)
+self.win_manager.update_spinwin(self.win_data["totalWin"])
+Lines.emit_linewin_events(self)
+```
+
+<Tip>
+Use line wins for traditional fixed-payline slots. If your game has a large grid and you want to maximize winning combinations without defining hundreds of paylines, consider [Ways Wins](/api/ways) instead.
+</Tip>

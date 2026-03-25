@@ -1,0 +1,166 @@
+---
+title: "Lines game (0_0_lines)"
+description: "A 3-row, 5-reel slot paying on 20 fixed paylines. Demonstrates wild multipliers that add together in freegame, a separate freegame reelset, and scatter-triggered freespins."
+---
+
+`0_0_lines` is the simplest sample game. It covers the core lines win type with wild multipliers, a dedicated freegame reelset, and scatter-triggered freespins.
+
+## Game overview
+
+| Property | Value |
+|---|---|
+| Reels | 5 |
+| Rows | 3 (all reels) |
+| Win type | Lines |
+| Paylines | 20 |
+| Win cap | 5000× |
+| Target RTP | 97% |
+| Symbols | H1–H4, L1–L5, Wild (W), Scatter (S) |
+
+## How to run
+
+```bash
+make run GAME=0_0_lines
+```
+
+Or directly:
+
+```bash
+python3 games/0_0_lines/run.py
+```
+
+## Mechanics
+
+### Basegame
+
+- Standard 20-payline evaluation left-to-right.
+- Scatter (S) appears on all 5 reels. Minimum 3 Scatters trigger the freegame.
+- Freespin awards: 3S → 8 spins, 4S → 12 spins, 5S → 15 spins.
+- Wild (W) substitutes for all paying symbols.
+
+### Freegame
+
+- A separate reelset (`FR0.csv`) is used — denser with Wilds and higher-value symbols.
+- Wilds carry multipliers (minimum 2×). Multipliers **add together** across all Wilds on a winning line, then multiply the base line win.
+- Retrigger: 2+ Scatters on reels 2, 3, 4 award extra spins (2S → 3, 3S → 5, 4S → 8, 5S → 12).
+
+<Note>
+  Wild multipliers in this game are **additive**, not multiplicative. Two 3× Wilds on the same line produce a 6× multiplier applied to the line win, not 9×. This differs from the Ways game, where multipliers compound.
+</Note>
+
+### Wild multiplier rule
+
+Wilds only pay on 5-of-a-kind by default. If the paytable includes 3- or 4-kind Wild payouts, the line calculation will select whichever combination yields the highest payout. For example: a 3-kind Wild on a line where there is also a 5-kind L4 — the 3-kind Wild is chosen if `paytable[(3, "W")] > paytable[(5, "L4")]`, regardless of the multiplier on the Wild.
+
+## Configuration
+
+### Paytable (`game_config.py`)
+
+```python
+self.paytable = {
+    (5, "W"): 50,  (4, "W"): 20,  (3, "W"): 10,
+    (5, "H1"): 50, (4, "H1"): 20, (3, "H1"): 10,
+    (5, "H2"): 15, (4, "H2"): 5,  (3, "H2"): 3,
+    (5, "H3"): 10, (4, "H3"): 3,  (3, "H3"): 2,
+    (5, "H4"): 8,  (4, "H4"): 2,  (3, "H4"): 1,
+    (5, "L1"): 5,  (4, "L1"): 1,  (3, "L1"): 0.5,
+    (5, "L2"): 3,  (4, "L2"): 0.7,(3, "L2"): 0.3,
+    (5, "L3"): 3,  (4, "L3"): 0.7,(3, "L3"): 0.3,
+    (5, "L4"): 2,  (4, "L4"): 0.5,(3, "L4"): 0.2,
+    (5, "L5"): 1,  (4, "L5"): 0.3,(3, "L5"): 0.1,
+}
+```
+
+### Reelsets
+
+```python
+reels = {"BR0": "BR0.csv", "FR0": "FR0.csv", "WCAP": "FRWCAP.csv"}
+```
+
+- `BR0` — basegame reelset.
+- `FR0` — freegame reelset (higher Wild density).
+- `WCAP` — wincap freegame reelset (higher multiplier density for forced max-win simulations).
+
+### Wild multiplier distribution
+
+Padding symbols carry multiplier attributes drawn from a weighted distribution:
+
+```python
+self.padding_symbol_values = {
+    "W": {"multiplier": {2: 100, 3: 50, 4: 50, 5: 50, 10: 30, 20: 20, 50: 5}}
+}
+```
+
+### Freespin triggers
+
+```python
+self.freespin_triggers = {
+    self.basegame_type: {3: 8, 4: 12, 5: 15},
+    self.freegame_type: {2: 3, 3: 5, 4: 8, 5: 12},
+}
+```
+
+### Bet modes
+
+Two bet modes are configured:
+
+- **`base`** (cost 1×, `is_feature=True`) — standard play with scatter-triggered freegame.
+- **`bonus`** (cost 100×, `is_buybonus=True`) — direct freegame entry (buy bonus).
+
+Each mode defines `Distribution` objects covering `wincap`, `freegame`, zero-win (`0`), and `basegame` simulation criteria with corresponding reel weights and multiplier distributions.
+
+## Game flow (`gamestate.py`)
+
+```python
+def run_spin(self, sim, simulation_seed=None):
+    self.reset_seed(sim)
+    self.repeat = True
+    while self.repeat:
+        self.reset_book()
+        self.draw_board()
+
+        # Evaluate wins, update wallet, transmit events
+        self.evaluate_lines_board()
+
+        self.win_manager.update_gametype_wins(self.gametype)
+        if self.check_fs_condition():
+            self.run_freespin_from_base()
+
+        self.evaluate_finalwin()
+        self.check_repeat()
+    self.imprint_wins()
+
+def run_freespin(self):
+    self.reset_fs_spin()
+    while self.fs < self.tot_fs:
+        self.update_freespin()
+        self.draw_board()
+
+        self.evaluate_lines_board()
+
+        if self.check_fs_condition():
+            self.update_fs_retrigger_amt()
+
+        self.win_manager.update_gametype_wins(self.gametype)
+
+    self.end_freespin()
+```
+
+`evaluate_lines_board()` is inherited from the SDK's `Executables` layer and handles Wild substitution, multiplier application, and event emission in a single call.
+
+## Output files
+
+After running, results appear in `games/0_0_lines/library/`:
+
+| File | Contents |
+|---|---|
+| `books/books_base.jsonl` | One JSON object per simulation: `id`, `payoutMultiplier`, `events`, `criteria` |
+| `books/books_bonus.jsonl` | Same structure for the bonus (buy-bonus) mode |
+| `lookup_tables/lookUpTable_base.csv` | `id, weight, payoutMultiplier` — used by the optimizer and RGS |
+| `lookup_tables/lookUpTableIdToCriteria_base.csv` | Maps each simulation ID to its distribution criteria |
+
+To inspect output in human-readable form, set `compression = False` and run with a small `num_sim_args` value in `run.py`.
+
+<Tip>
+  To explore event structure interactively, set `"base": 100` and `compression = False` in `run.py`, then open `library/books/books_base.jsonl` in any JSON viewer. Each entry includes the full `events` array returned to the RGS.
+</Tip>

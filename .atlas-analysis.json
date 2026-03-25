@@ -1,28 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "Stake Engine Math SDK",
+  "projectType": "sdk-library",
+  "projectName": "Stake Engine Math SDK",
+  "projectDescription": "A Python-based math engine SDK for defining slot game rules, simulating outcomes, and optimizing win distributions for deployment on Stake Engine.",
   "theme": "luma",
-  "colors": {
-    "primary": "#061625",
-    "light": "#7c8c8e",
-    "dark": "#d2d7d9"
-  },
-  "favicon": "/favicon.svg",
-  "logo": {
-    "light": "https://media.brand.dev/73724ea9-d59f-4888-8699-b14da91a6074.png",
-    "dark": "https://media.brand.dev/73724ea9-d59f-4888-8699-b14da91a6074.png"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/StakeEngine/math-sdk"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/StakeEngine/math-sdk"
-    }
-  },
+  "primaryColor": "#061625",
+  "lightColor": "#7c8c8e",
+  "darkColor": "#d2d7d9",
   "navigation": {
     "tabs": [
       {
@@ -107,5 +90,32 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Multi-threaded slot game simulation engine",
+    "Built-in win calculation for Lines, Ways, Cluster, and Scatter pay types",
+    "Rust-powered iterative optimization algorithm for win distribution balancing",
+    "Configurable BetMode distributions with criteria-based simulation quotas",
+    "Event-driven game state architecture compatible with the Stake RGS play/ API",
+    "PAR sheet generation and statistical analysis tooling",
+    "Compressed (.json.zst) and uncompressed simulation output formats",
+    "Sample games for Lines, Ways, Cluster, Scatter, and Expanding Wilds mechanics"
+  ],
+  "publicApiSurface": [
+    "GameConfig / Config — game configuration base class",
+    "GameState — simulation entry point with run_spin() and run_freespin()",
+    "GameExecutables — reusable game-logic and event emission helpers",
+    "GameCalculations — board and win evaluation helpers",
+    "BetMode / Distribution — bet mode and win-criteria configuration",
+    "create_books() — multi-threaded simulation runner and file output",
+    "generate_configs() — frontend/backend/math config file generator",
+    "OptimizationSetup / OptimizationExecution — Rust optimization pipeline",
+    "LineWins.get_lines() — line-based win evaluation",
+    "WaysWins — ways-based win evaluation",
+    "ClusterWins — cluster-based win evaluation",
+    "ScatterWins — scatter/pay-anywhere win evaluation",
+    "Tumble — cascading/tumbling board mechanics",
+    "WalletManager — per-simulation and cumulative win tracking",
+    "get_random_outcome() — weighted random draw utility"
+  ]
 }

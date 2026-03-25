@@ -1,0 +1,358 @@
+---
+title: "Win Types"
+description: "Reference for the four built-in win evaluation methods — Lines, Ways, Cluster, and Scatter — including wild substitution, multiplier strategies, and the win_data structure."
+---
+
+The Stake Engine Math SDK provides four win evaluation methods. You select one by setting `config.win_type` in your `GameConfig`, then call the corresponding function from within `run_spin()` or `run_freespin()`.
+
+All four methods return the same `win_data` structure, so wallet manager updates and event emission are consistent regardless of which method you use.
+
+## The win_data structure
+
+Every win evaluation function returns:
+
+```python
+win_data = {
+    "totalWin": float,   # sum of all wins for this board state
+    "wins": [
+        {
+            "symbol":    str,   # winning symbol name
+            "kind":      int,   # number of matching symbols
+            "win":       float, # payout amount (after multipliers)
+            "positions": list,  # [{"reel": int, "row": int}, ...]
+            "meta":      dict,  # method-specific extra data
+        },
+        ...
+    ]
+}
+```
+
+The `positions` key is required for the predefined win event functions to correctly adjust row numbers when padding symbols are in use.
+
+## Multiplier strategies
+
+All win methods integrate with `apply_mult()` from `src.wins.multiplier_strategy`. Three strategies are available:
+
+| Strategy | Behaviour |
+|---|---|
+| `"global"` | Multiplies the base win by a single `global_multiplier` value |
+| `"symbol"` | Sums multiplier attributes on winning symbol positions; multiplied by symbol count for ways games |
+| `"combined"` | Applies both symbol and global multipliers together |
+
+Pass the strategy when calling the win function:
+
+```python
+win_data = Lines.get_lines(
+    self.board,
+    self.config,
+    multiplier_method="symbol",
+    global_multiplier=self.global_mult,
+)
+```
+
+The resulting `meta` dict includes `multiplier`, `winWithoutMult`, `globalMult`, and `lineMultiplier` (for lines) or `symbolMult` and `ways` (for ways), giving the frontend full detail to display the win breakdown.
+
+<Tabs>
+  <Tab title="Lines">
+    ## Lines wins
+
+    Lines games pay on fixed paylines. Each payline is an array of row indices — one per reel — that defines a path across the board.
+
+    ### Paylines configuration
+
+    Define paylines in `config.paylines` as a dict from line index to row array:
+
+    ```python game_config.py
+    self.paylines = {
+        0:  [0, 0, 0, 0, 0],  # top row
+        1:  [1, 1, 1, 1, 1],  # middle row
+        2:  [2, 2, 2, 2, 2],  # bottom row
+        3:  [0, 1, 2, 1, 0],  # V-shape
+        4:  [2, 1, 0, 1, 2],  # inverted V
+        # ... up to N paylines
+    }
+    ```
+
+    ### Calling get_lines()
+
+    ```python gamestate.py
+    self.win_data = Lines.get_lines(
+        board=self.board,
+        config=self.config,
+        wild_key="wild",           # attribute name for wild symbols
+        wild_sym="W",              # symbol name for wild-only wins
+        multiplier_method="symbol",
+        global_multiplier=self.global_mult,
+    )
+    self.win_manager.update_spinwin(self.win_data["totalWin"])
+    Lines.emit_linewin_events(self)
+    ```
+
+    ### Wild substitution
+
+    Wilds substitute for any non-wild symbol. When a payline begins with one or more wilds followed by a non-wild symbol, the engine evaluates both the wild-only win and the substituted win, taking whichever pays more:
+
+    - Payline `[W, W, W, L4, L4]` evaluates `(3, "W")` vs `(5, "L4")` and keeps the higher payout.
+
+    <Note>
+      Wilds on the first reel do not trigger substitution — only wild-then-symbol sequences from left to right are evaluated. A common approach is to define wild symbols to pay only for complete lines (e.g. 5-of-a-kind wilds only), avoiding ambiguous comparisons.
+    </Note>
+
+    ### Lines meta fields
+
+    ```python
+    "meta": {
+        "lineIndex":       int,   # payline index from config.paylines
+        "multiplier":      int,   # total multiplier applied
+        "winWithoutMult": float,  # base win before multipliers
+        "globalMult":      int,   # global multiplier component
+        "lineMultiplier":  int,   # per-symbol multiplier component
+    }
+    ```
+  </Tab>
+
+  <Tab title="Ways">
+    ## Ways wins
+
+    Ways games pay for like-symbols (or wilds) appearing on consecutive reels, regardless of row. The total number of winning combinations — "ways" — is the product of the symbol count on each consecutive reel.
+
+    The maximum possible ways for a board is `num_rows[0] × num_rows[1] × ... × num_rows[n-1]`.
+
+    ### Calling get_ways_data()
+
+    ```python gamestate.py
+    self.win_data = Ways.get_ways_data(
+        config=self.config,
+        board=self.board,
+        wild_key="wild",
+        global_multiplier=self.global_mult,
+        multiplier_key="multiplier",
+        multiplier_strategy="symbol",
+    )
+    self.win_manager.update_spinwin(self.win_data["totalWin"])
+    Ways.emit_wayswin_events(self)
+    ```
+
+    ### How ways are counted
+
+    For each symbol, the engine counts how many positions it occupies per reel and multiplies across consecutive reels:
+
+    ```
+    Board:
+    L5  H1  L4  L4  L4
+    L1  H4  L3  H2  L4
+    H1  H1  H1  L3  H3
+    ```
+
+    For symbol `H1`: reel 1 has 1, reel 2 has 2, reel 3 has 1 → `1 × 2 × 1 = 2 ways`. Payout is `config.paytable[(3, "H1")] × 2`.
+
+    When a symbol carries a `multiplier` attribute, the `symbol` strategy adds the multiplier value to the reel count instead of counting the symbol once:
+
+    ```
+    H1 on reel 3 has a 3x multiplier → reel count becomes 3 instead of 1
+    Total ways: 1 × 2 × 3 = 6 ways
+    ```
+
+    <Note>
+      Ways games do not account for wild symbols on the first reel.
+    </Note>
+
+    ### Ways meta fields
+
+    ```python
+    "meta": {
+        "ways":          int,   # total number of winning ways
+        "globalMult":    int,   # global multiplier applied
+        "winWithoutMult": float, # base win before global multiplier
+        "symbolMult":    int,   # cumulative symbol multiplier contribution
+    }
+    ```
+  </Tab>
+
+  <Tab title="Cluster">
+    ## Cluster wins
+
+    Cluster games pay when a group of adjacent like-symbols (sharing a reel or row edge — diagonals do not count) meets or exceeds a minimum cluster size. A minimum of 5 symbols is typical.
+
+    ### Paytable for clusters
+
+    Because cluster sizes can range from 5 to the full board, use `convert_range_table()` to define range-based payouts:
+
+    ```python game_config.py
+    self.pay_group = {
+        ((5, 7),   "H1"): 50,
+        ((8, 10),  "H1"): 150,
+        ((11, 25), "H1"): 500,
+    }
+    self.paytable = self.convert_range_table(self.pay_group)
+    ```
+
+    ### Calling get_cluster_data()
+
+    ```python gamestate.py
+    self.win_data = Cluster.get_cluster_data(
+        config=self.config,
+        board=self.board,
+        global_multiplier=self.global_mult,
+        wild_key="wild",
+        multiplier_key="multiplier",
+    )
+    self.win_manager.update_spinwin(self.win_data["totalWin"])
+    self.emit_tumble_win_events()
+    ```
+
+    ### Tumbling integration
+
+    Cluster games commonly use a tumble mechanic. Winning symbols are marked with `explode = True` by `evaluate_clusters()`. After emitting events, call `tumble_game_board()` to remove them and fill vacant positions from the reelstrip above:
+
+    ```python gamestate.py
+    # Initial evaluation
+    self.win_data = Cluster.get_cluster_data(
+        config=self.config,
+        board=self.board,
+        global_multiplier=self.global_multiplier,
+    )
+    self.win_manager.update_spinwin(self.win_data["totalWin"])
+    self.emit_tumble_win_events()
+
+    # Continue tumbling while wins exist and wincap not hit
+    while self.win_data["totalWin"] > 0 and not self.wincap_triggered:
+        self.tumble_game_board()
+        self.win_data = Cluster.get_cluster_data(
+            config=self.config,
+            board=self.board,
+            global_multiplier=self.global_multiplier,
+        )
+        self.win_manager.update_spinwin(self.win_data["totalWin"])
+        self.emit_tumble_win_events()
+    ```
+
+    Clusters are found using a Breadth-First Search (BFS) algorithm. Wild symbols can contribute to multiple clusters simultaneously, including clusters of different symbols.
+
+    ### Cluster meta fields
+
+    ```python
+    "meta": {
+        "globalMult":    int,    # global multiplier applied
+        "clusterMult":   int,    # sum of multiplier attributes in the cluster
+        "winWithoutMult": float, # base paytable payout
+        "overlay": {
+            "reel": int,         # reel of the win-amount overlay position
+            "row":  int,         # row of the win-amount overlay position
+        }
+    }
+    ```
+
+    The `overlay` position is the board cell closest to the centre-of-mass of the winning cluster, used by the frontend to position the win-amount display.
+  </Tab>
+
+  <Tab title="Scatter">
+    ## Scatter wins (pay anywhere)
+
+    Scatter-pays games award wins based on the total count of a symbol anywhere on the board. Symbols do not need to be adjacent or on a payline. A minimum count of 8 is typical, though this is defined in your paytable.
+
+    ### Paytable for scatter pays
+
+    Like cluster pays, use `convert_range_table()` for range-based payouts:
+
+    ```python game_config.py
+    self.pay_group = {
+        ((8, 8),   "H1"): 10,
+        ((9, 9),   "H1"): 25,
+        ((10, 12), "H1"): 75,
+        ((13, 25), "H1"): 200,
+    }
+    self.paytable = self.convert_range_table(self.pay_group)
+    ```
+
+    ### Calling get_scatterpay_wins()
+
+    ```python gamestate.py
+    self.win_data = Scatter.get_scatterpay_wins(
+        config=self.config,
+        board=self.board,
+        wild_key="wild",
+        multiplier_key="multiplier",
+        global_multiplier=self.global_mult,
+    )
+    self.win_manager.update_spinwin(self.win_data["totalWin"])
+    self.emit_tumble_win_events()
+    ```
+
+    ### Wild substitution
+
+    Wild symbols contribute to every symbol's count simultaneously. If 2 wilds and 9 `H1` symbols appear on the board, `H1` is evaluated as an 11-kind win.
+
+    ### Tumbling integration
+
+    Scatter pays games commonly cascade. The pattern mirrors cluster pays:
+
+    ```python gamestate.py
+    self.win_data = Scatter.get_scatterpay_wins(
+        config=self.config,
+        board=self.board,
+        global_multiplier=self.global_multiplier,
+    )
+    self.win_manager.update_spinwin(self.win_data["totalWin"])
+    self.emit_tumble_win_events()
+
+    while self.win_data["totalWin"] > 0 and not self.wincap_triggered:
+        self.tumble_game_board()
+        self.win_data = Scatter.get_scatterpay_wins(
+            config=self.config,
+            board=self.board,
+            global_multiplier=self.global_multiplier,
+        )
+        self.win_manager.update_spinwin(self.win_data["totalWin"])
+        self.emit_tumble_win_events()
+    ```
+
+    ### Scatter meta fields
+
+    ```python
+    "meta": {
+        "globalMult":    int,    # global multiplier applied
+        "clusterMult":   int,    # sum of multiplier attributes on winning positions
+        "winWithoutMult": float, # base paytable payout
+        "overlay": {
+            "reel": int,         # reel of the win-amount overlay position
+            "row":  int,         # row of the win-amount overlay position
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Choosing a win type
+
+<CardGroup cols={2}>
+  <Card title="Lines" icon="grip-lines">
+    Fixed paylines on a rectangular grid. Best for traditional slot formats with a defined number of win paths.
+  </Card>
+  <Card title="Ways" icon="arrows-split-up-and-left">
+    All combinations across consecutive reels. Higher hit-rate than lines on the same board size.
+  </Card>
+  <Card title="Cluster" icon="object-group">
+    Adjacent symbol groups. Common with tumble mechanics and large, irregular boards.
+  </Card>
+  <Card title="Scatter" icon="star">
+    Total symbol count anywhere on board. Pairs naturally with cascading grids and high symbol counts.
+  </Card>
+</CardGroup>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Game Configuration" icon="gear" href="/guides/configuration">
+    Set win_type and configure the paytable for your chosen method.
+  </Card>
+  <Card title="Game Events" icon="bell" href="/guides/events">
+    Emit win events after calling a win evaluation function.
+  </Card>
+  <Card title="Lines API reference" icon="book" href="/api/lines">
+    Full Lines class method reference.
+  </Card>
+  <Card title="Ways API reference" icon="book" href="/api/ways">
+    Full Ways class method reference.
+  </Card>
+</CardGroup>
